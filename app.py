@@ -27,9 +27,9 @@ from streamlit_folium import st_folium
 
 
 # Carimbo de versão (aparece na barra lateral): ajuda a conferir qual cópia do app está no ar.
-# Alcance ao redor das capitais (km, cor): os mesmos raios usados na verificação contra o GLM.
-ALCANCES_KM = ((30, "#e11d1d"), (50, "#ff8a00"), (100, "#ffd400"))  # vermelho, laranja, amarelo
-VERSAO_APP = "2026-10-08c · raios GLM 20 min com histórico completo na abertura (vermelho, laranja, amarelo, verde) + alcance 30/50/100 km"
+# Alcance ao redor das capitais (km, cor): os mesmos raios usados na verificação contra o GLM. Linhas grossas e tracejadas.
+ALCANCES_KM = ((30, "#2ecc40"), (50, "#ffd400"), (100, "#e11d1d"))  # verde, amarelo, vermelho
+VERSAO_APP = "2026-10-08d · raios GLM 20 min (vermelho, laranja, amarelo, verde) + alcance tracejado 30 km verde, 50 km amarelo, 100 km vermelho"
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -503,7 +503,7 @@ def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: boo
       .pdea-legenda .rl-titulo {{ font-weight:700; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
         color:#52606d; margin-bottom:4px; }}
       .pdea-legenda .rl-sub {{ color:#7b8794; font-size:10.5px; margin:-2px 0 4px; }}
-      .rl-anel {{ width:11px; height:11px; border-radius:50%; border:2.5px solid; box-sizing:border-box; margin:0 0; }}
+      .rl-anel {{ width:12px; height:12px; border-radius:50%; border:3px dashed; box-sizing:border-box; margin:0 0; }}
       .rl-raio {{ width:9px; height:9px; border-radius:50%; border:1px solid rgba(15,23,42,.55); margin:0 1px; }}
       .pdea-glm-chip {{ background:rgba(255,255,255,.94); border:1px solid rgba(15,23,42,.12); border-radius:10px; padding:6px 10px;
         font:12px 'Segoe UI', Arial, sans-serif; color:#1f2933; box-shadow:0 4px 14px rgba(15,23,42,.18); line-height:1.35; }}
@@ -647,13 +647,13 @@ def criar_mapa(
         ).add_to(mapa)
 
     if alcance:
-        # Anéis de 30, 50 e 100 km ao redor de cada capital (vermelho, laranja e amarelo). Só contorno, sem capturar cliques.
+        # Anéis de 30, 50 e 100 km ao redor de cada capital (verde, amarelo e vermelho), grossos e tracejados, sem capturar cliques.
         grupo_alcance = folium.FeatureGroup(name="Alcance (30, 50 e 100 km)", control=False)
         for _, linha in tabela.iterrows():
             for km, cor_anel in reversed(ALCANCES_KM):  # do maior para o menor: o anel de 30 km fica por cima
                 anel = folium.Circle(
-                    location=[linha["Latitude"], linha["Longitude"]], radius=km * 1000, color=cor_anel, weight=2,
-                    opacity=0.9, fill=True, fill_color=cor_anel, fill_opacity=0.04,
+                    location=[linha["Latitude"], linha["Longitude"]], radius=km * 1000, color=cor_anel, weight=4,
+                    opacity=0.95, dash_array="12 8", fill=True, fill_color=cor_anel, fill_opacity=0.04,
                 )
                 anel.options["interactive"] = False  # o folium descarta esse argumento no construtor; sem isso o anel captura o mouse
                 anel.add_to(grupo_alcance)
@@ -1259,7 +1259,7 @@ def main() -> None:
             goes_opacidade = st.slider("Opacidade das nuvens", 0.2, 0.9, 0.6, step=0.05) if goes else 0.6
             alcance = st.toggle(
                 "Alcance ao redor das capitais (30, 50 e 100 km)", value=True,
-                help="Anéis de 30 km (vermelho), 50 km (laranja) e 100 km (amarelo) em volta de cada capital: os mesmos raios usados "
+                help="Anéis tracejados de 30 km (verde), 50 km (amarelo) e 100 km (vermelho) em volta de cada capital: os mesmos raios usados "
                      "para verificar o escore contra os raios observados pelo GLM.",
             )
             glm = False

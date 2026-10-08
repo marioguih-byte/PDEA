@@ -12,6 +12,7 @@ quais devolvem CAPE, Lifted Index e CIN.
 from __future__ import annotations
 
 import sys
+import os
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -324,7 +325,7 @@ def testes_sem_cadastro() -> None:
         assert not at.exception
         assert any("CAPITAIS" in str(c.value) for c in at.caption)  # o painel já aparece na primeira tela
         assert not any("e-mail" in str(t_.label).lower() for t_ in at.text_input)  # nenhum campo de e-mail
-        assert any("Versão 2026-10-08c" in str(c.value) for c in at.caption)
+        assert any("Versão 2026-10-08d" in str(c.value) for c in at.caption)
     finally:
         modelos.buscar_modelo = original
         if antigo is None:
@@ -351,14 +352,73 @@ def testes_mapa_alcance() -> None:
         return pdea_app.criar_mapa(tab, "OpenStreetMap", pdea_app.CORES_NIVEL, True, "12:00", "Best Match", True, False, 0.6, False, alcance).get_root().render()
 
     h = mapa(True)
-    assert pdea_app.ALCANCES_KM == ((30, "#e11d1d"), (50, "#ff8a00"), (100, "#ffd400"))
+    assert pdea_app.ALCANCES_KM == ((30, "#2ecc40"), (50, "#ffd400"), (100, "#e11d1d"))  # verde, amarelo, vermelho
     assert len(re.findall(r"L\.circle\(", h)) == 3 * len(ESTACOES)
     for km, cor in pdea_app.ALCANCES_KM:
         blocos = [b for b in re.findall(r"L\.circle\(.*?\)\.addTo", h, flags=re.S) if re.search(r'"radius": %d\b' % (km * 1000), b)]
-        assert len(blocos) == len(ESTACOES) and all(f'"color": "{cor}"' in b and '"interactive": false' in b for b in blocos), km
+        assert len(blocos) == len(ESTACOES) and all(f'"color": "{cor}"' in b and '"interactive": false' in b and '"weight": 4' in b and '"dashArray": "12 8"' in b for b in blocos), km
     assert all(x in h for x in ("Alcance ao redor da capital", "30 km", "50 km", "100 km"))
     assert "L.circle(" not in mapa(False) and "Alcance ao redor da capital" not in mapa(False)
-    print("Testes do alcance de 30, 50 e 100 km (vermelho, laranja, amarelo): OK")
+    print("Testes do alcance de 30, 50 e 100 km (verde, amarelo, vermelho; grossos e tracejados): OK")
+
+
+def testes_manter_acordado() -> None:
+    """Script de visita (mantém o app acordado): acorda o app se estiver dormindo, espera carregar e falha se não carregar."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("visitar_app", Path(__file__).resolve().parent / ".github" / "scripts" / "visitar_app.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    class Loc:
+        def __init__(self, n, acao=None):
+            self.n, self.acao, self.first = n, acao, self
+
+        def count(self):
+            return self.n
+
+        def click(self, timeout=None):
+            if self.acao:
+                self.acao()
+
+    class PaginaFalsa:
+        """Simula o app dormindo (botão "get this app back up") e carregando só depois do clique."""
+
+        def __init__(self, dormindo=True, carrega=True):
+            self.dormindo, self.carrega, self.cliques, self.visitou = dormindo, carrega, 0, None
+            self.frames = []
+
+        def goto(self, url, wait_until=None, timeout=None):
+            self.visitou = url
+
+        def get_by_text(self, texto, exact=False):
+            return Loc(1 if self.dormindo else 0, self._clicou)
+
+        def _clicou(self):
+            self.cliques += 1
+            self.dormindo = False
+
+        def locator(self, seletor):
+            assert seletor == '[data-testid="stApp"]'
+            return Loc(1 if (not self.dormindo and self.carrega) else 0)
+
+    relogio = [0.0]
+    dorme = lambda s: relogio.__setitem__(0, relogio[0] + s)  # noqa: E731
+    agora = lambda: relogio[0]  # noqa: E731
+    p1 = PaginaFalsa(dormindo=True)
+    assert mod.visitar(p1, "https://x.streamlit.app", 60, 5, dorme, agora) == "acordado" and p1.cliques == 1 and p1.visitou == "https://x.streamlit.app"
+    p2 = PaginaFalsa(dormindo=False)
+    assert mod.visitar(p2, "https://x.streamlit.app", 60, 5, dorme, agora) == "ja_acordado" and p2.cliques == 0
+    try:
+        mod.visitar(PaginaFalsa(dormindo=False, carrega=False), "https://x.streamlit.app", 30, 5, dorme, agora)
+        raise AssertionError("deveria falhar se o app não carregar")
+    except RuntimeError as e:
+        assert "não carregou" in str(e)
+    os.environ.pop("APP_URL", None)
+    assert mod.main() == 2  # sem APP_URL, orienta e sai com erro
+    flux = (Path(__file__).resolve().parent / ".github" / "workflows" / "manter_app_acordado.yml").read_text(encoding="utf-8")
+    assert 'cron: "17 */6 * * *"' in flux and "vars.APP_URL" in flux and "playwright install" in flux
+    print("Teste da visita que mantém o app acordado (acorda, espera carregar, falha sem carregar, exige APP_URL): OK")
 
 
 def testes_ampliados() -> None:
@@ -577,6 +637,7 @@ if __name__ == "__main__":
     testes_glm_ao_vivo()
     testes_sem_cadastro()
     testes_mapa_alcance()
+    testes_manter_acordado()
     testes_ampliados()
     if "--online" in sys.argv:
         from modelos import ErroBuscaModelo

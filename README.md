@@ -23,7 +23,7 @@ Painel em **Streamlit** que mostra, para as **27 capitais brasileiras**, o poten
 | **Regiões e variáveis extras** | O score usa CAPE × chuva. Fatores de CAPE por UF podem ser definidos em `config_regioes.json` (todos 1,0 por padrão). Lifted Index, CIN, rajada, gradiente 850–500 hPa e nível de 0 °C aparecem como cartões e gráficos no detalhe e no histórico, mas **não** entram no score. |
 | **Como o score foi calculado** | No detalhe de cada capital, uma tabela mostra o CAPE, a chuva prevista, o produto CAPE × chuva e o score final. |
 | **Camadas do mapa** | Divisas estaduais (ligadas por padrão), topos de nuvem do GOES-East (infravermelho, banda 13, via NASA GIBS, com controle de opacidade) e **raios observados pelo GLM** (ver abaixo). |
-| **Alcance ao redor das capitais** | Anéis de **30 km (vermelho)**, **50 km (laranja)** e **100 km (amarelo)** em volta de cada capital, os mesmos raios usados na verificação contra o GLM. Botão na barra lateral (*Mapa*); só contorno, sem capturar o mouse. |
+| **Alcance ao redor das capitais** | Anéis tracejados e grossos de **30 km (verde)**, **50 km (amarelo)** e **100 km (vermelho)** em volta de cada capital, os mesmos raios usados na verificação contra o GLM. Botão na barra lateral (*Mapa*); só contorno, sem capturar o mouse. |
 | **Raios em tempo real (GLM)** | Flashes do GLM do GOES-East nos últimos 20 min, coloridos pela idade: **vermelho** (até 5 min), **laranja** (5 a 10), **amarelo** (10 a 15) e **verde** (15 a 20); depois de 20 min somem. Uma thread no servidor coleta os arquivos mais recentes do repositório público da NOAA a cada 5 min (minutos 0, 5, 10…) e grava `static/glm_flashes.txt`; o mapa busca o arquivo no navegador e redesenha **só a camada de raios**, sem recarregar a página nem acionar o Streamlit. Um cartão no mapa mostra o número de raios e a hora do dado mais recente. |
 | **Histórico** | Grava em SQLite, uma vez por hora e por modelo, CAPE, LI, CIN e variáveis extras das próximas 48 h. O painel mostra o score realizado e os gráficos de CAPE, LI, CIN e variáveis extras no período, como a previsão para um horário mudou entre execuções, e exporta CSV com score recalculado. |
 | **Exportação** | Tabela atual e séries horárias de 48 h em CSV (abre no Excel em português); mapa estático em PNG e relatório em PDF (mapa + ranking). |
@@ -76,6 +76,15 @@ python validar.py --online --modelos # idem para os 12 modelos: mostra quais dev
 - O escore mede **potencial**, e não detecta descargas. Os níveis são provisórios até a calibração com o GLM (`metodologia/`).
 - O Open-Meteo combina modelos globais; use o seletor de modelo para comparar e avaliar a incerteza.
 
+## Manter o app acordado (Streamlit Community Cloud)
+
+O Community Cloud hiberna apps sem tráfego por **12 horas**; segundo a documentação, para mantê-lo acordado basta **visitar** o app (commits não acordam). Não há como impedir isso dentro do código. O workflow `.github/workflows/manter_app_acordado.yml` visita o app a cada 6 horas com um navegador (Playwright), clica em "Yes, get this app back up!" se ele estiver dormindo e espera o app carregar.
+
+1. No GitHub: *Settings > Secrets and variables > Actions > aba Variables > New repository variable*: nome `APP_URL`, valor `https://SEU-APP.streamlit.app`.
+2. Rode uma vez em *Actions > Manter o app acordado > Run workflow* para testar; o log deve terminar em "Visita concluída".
+
+Limites: é um **contorno** de uma regra do plano gratuito, não um recurso garantido, e o Streamlit pode mudar a regra; o agendamento do GitHub pode atrasar alguns minutos; em repositório público o GitHub desativa agendamentos após 60 dias sem atividade no repositório; em repositório privado cada visita consome minutos da cota do Actions (cerca de 2 min por execução, 4 execuções por dia). Para operação sempre ligada, a saída segura é hospedar o app em um servidor próprio ou em outro provedor sem hibernação.
+
 ## Raios em tempo real (GLM): detalhes
 
 - **Fonte:** arquivos GLM-L2-LCFA do bucket público `noaa-goes19` (GOES-East desde 07/04/2025), um arquivo a cada 20 s; a variável de ambiente `PDEA_GLM_BUCKET` troca o bucket.
@@ -84,7 +93,7 @@ python validar.py --online --modelos # idem para os 12 modelos: mostra quais dev
 - **O que se vê:** o GLM mede a atividade elétrica **total** (intranuvem e nuvem-solo), com eficiência de detecção que varia com a posição e o horário; os arquivos chegam ao S3 com atraso de alguns minutos. É observação por satélite, não previsão nem alerta.
 - **Sem recarregar:** nos primeiros minutos de um servidor recém-ligado o navegador tenta a cada 5 s até a primeira coleta terminar; depois consulta `glm_meta.txt` (poucos bytes) a cada 30 s e só baixa `glm_flashes.txt` quando há dado novo. Se o arquivo não puder ser lido, o mapa mantém o último desenho e o cartão mostra o horário do dado.
 - **Requisitos:** `netCDF4` (em `requirements.txt`) e `server.enableStaticServing = true` (em `.streamlit/config.toml`). Sem eles o painel funciona, só sem a camada.
-- **Streamlit Community Cloud:** a coleta roda enquanto o app está ativo; quando o app hiberna por inatividade, a thread para, e a camada mostra "aguardando dados" até alguém acordar o app e a primeira coleta terminar (cerca de um minuto).
+- **Streamlit Community Cloud:** a coleta roda enquanto o app está ativo; quando o app hiberna por inatividade, a thread para, e a camada mostra "aguardando dados" até alguém acordar o app e a primeira coleta terminar (cerca de um minuto). Veja a seção sobre manter o app acordado.
 - **Cuidado técnico:** a leitura NetCDF/HDF5 é feita um arquivo por vez, porque a biblioteca não é segura para várias threads.
 
 ## Como confirmar a versão no ar
