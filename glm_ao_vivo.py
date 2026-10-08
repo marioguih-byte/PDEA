@@ -37,7 +37,8 @@ import numpy as np
 BUCKET = os.environ.get("PDEA_GLM_BUCKET", "noaa-goes19")  # GOES-East desde 07/04/2025
 JANELA_MIN = 20
 INTERVALO_S = 300
-MAX_RAIOS = 25000
+MAX_RAIOS = 24000
+FAIXA_S = 300  # faixas de idade de 5 min (vermelho, laranja, amarelo, verde)
 CAIXA_BRASIL = (-35.0, 7.0, -75.0, -32.0)  # lat_min, lat_max, lon_min, lon_max (com folga)
 ARQUIVO_PADRAO = Path(__file__).resolve().parent / "static" / "glm_flashes.txt"
 NS = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
@@ -84,6 +85,44 @@ def extrair_flashes(conteudo: bytes) -> np.ndarray:
     la0, la1, lo0, lo1 = CAIXA_BRASIL
     ok = np.isfinite(lat) & np.isfinite(lon) & (lat >= la0) & (lat <= la1) & (lon >= lo0) & (lon <= lo1)
     return np.column_stack([lat[ok], lon[ok]]) if ok.any() else np.empty((0, 2))
+
+
+def compactar(raios: list[list]) -> list[list]:
+    """Junta flashes repetidos: mesma célula (0,01 grau, cerca de 1 km) no mesmo minuto viram um só ponto.
+
+    No mapa eles se sobrepõem, então nada se perde na imagem, e o arquivo encolhe bastante em tempestades fortes.
+    """
+    vistos: set[tuple] = set()
+    saida = []
+    for lat, lon, idade in raios:
+        chave = (lat, lon, idade // 60)
+        if chave not in vistos:
+            vistos.add(chave)
+            saida.append([lat, lon, idade])
+    return saida
+
+
+def amostrar_por_faixa(raios: list[list], maximo: int, faixa_s: int = FAIXA_S) -> list[list]:
+    """Limita a quantidade SEM favorecer só os mais recentes: cada faixa de idade (5 min) recebe a mesma cota.
+
+    Cortar sempre os mais antigos faria sumirem o amarelo e o verde nas tempestades fortes. Dentro da faixa, a amostra é
+    uniforme (um a cada k), o que preserva a distribuição espacial.
+    """
+    if len(raios) <= maximo:
+        return raios
+    faixas: dict[int, list[list]] = {}
+    for r in raios:
+        faixas.setdefault(r[2] // faixa_s, []).append(r)
+    cota = max(1, maximo // len(faixas))
+    saida: list[list] = []
+    for k in sorted(faixas):
+        itens = faixas[k]
+        if len(itens) <= cota:
+            saida += itens
+        else:
+            passo = len(itens) / cota
+            saida += [itens[int(i * passo)] for i in range(cota)]
+    return saida
 
 
 class AtualizadorGLM:
@@ -146,8 +185,7 @@ class AtualizadorGLM:
         for t, arr in pares:
             idade = int((agora - t).total_seconds())
             raios += [[round(float(la), 2), round(float(lo), 2), idade] for la, lo in arr]
-        if len(raios) > MAX_RAIOS:  # mantém os mais recentes
-            raios = sorted(raios, key=lambda r: r[2])[:MAX_RAIOS]
+        raios = amostrar_por_faixa(compactar(raios), MAX_RAIOS)  # sem cortar só os antigos: todas as cores seguem presentes
         dados = {"gerado": int(agora.timestamp()), "janela_min": self.janela_min,
                  "ultimo_arquivo": int(pares[-1][0].timestamp()) if pares else None, "arquivos": len(pares), "raios": raios}
         self.ultimo = dados

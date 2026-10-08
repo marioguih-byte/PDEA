@@ -29,7 +29,7 @@ from streamlit_folium import st_folium
 # Carimbo de versão (aparece na barra lateral): ajuda a conferir qual cópia do app está no ar.
 # Alcance ao redor das capitais (km, cor): os mesmos raios usados na verificação contra o GLM.
 ALCANCES_KM = ((30, "#e11d1d"), (50, "#ff8a00"), (100, "#ffd400"))  # vermelho, laranja, amarelo
-VERSAO_APP = "2026-10-08b · raios GLM 20 min (vermelho, laranja, amarelo, verde) + alcance 30/50/100 km (sem cadastro de e-mail)"
+VERSAO_APP = "2026-10-08c · raios GLM 20 min com histórico completo na abertura (vermelho, laranja, amarelo, verde) + alcance 30/50/100 km"
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -270,7 +270,7 @@ class RaiosGLM(MacroElement):
                 if (m <= 15) { return {r: 3.5, f: '#ffe000', b: '#6b5a00'}; }   // amarelo
                 return {r: 3, f: '#2ecc40', b: '#0f5a1a'};                       // verde (15 a 20 min); depois some
             }
-            function texto(n, d) {
+            function texto(n, d, cls) {
                 var el = chip.getContainer();
                 if (!el) { return; }
                 if (!d) { el.innerHTML = '<b>&#9889; Raios GLM</b><br><span class="g-n">aguardando dados</span>'; return; }
@@ -278,8 +278,16 @@ class RaiosGLM(MacroElement):
                 var atraso = ult ? Math.round((agoraServidor() * 1000 - ult) / 60000) : null;
                 var obs = ult ? ('dados at&eacute; ' + hora(ult) + ' (h&aacute; ' + atraso + ' min)') : 'sem arquivos recentes';
                 var aviso = (atraso !== null && atraso > 15) ? ' &middot; <span class="g-aviso">atrasado</span>' : '';
+                var cores = ['#e11d1d', '#ff8a00', '#ffe000', '#2ecc40'], rot = ['at&eacute; 5 min', '5 a 10 min', '10 a 15 min', '15 a 20 min'];
+                var linha = '';
+                if (cls) {
+                    for (var c = 0; c < 4; c++) {
+                        linha += '<span title="' + rot[c] + '"><span class="g-pt" style="background:' + cores[c] + '"></span><span class="g-cls">' +
+                                 cls[c] + '</span></span> ';
+                    }
+                }
                 el.innerHTML = '<b>&#9889; Raios GLM</b> &middot; ' + n.toLocaleString('pt-BR') + ' nos &uacute;ltimos ' +
-                    Math.round(d.janela_min) + ' min<br><span class="g-n">' + obs + aviso + '</span>';
+                    Math.round(d.janela_min) + ' min<br><span class="g-linha">' + linha + '</span><br><span class="g-n">' + obs + aviso + '</span>';
             }
             function desenhar() {
                 var d = estado.dados;
@@ -288,10 +296,14 @@ class RaiosGLM(MacroElement):
                 var agora = agoraServidor();
                 var idadeExtra = agora - d.gerado;
                 var visiveis = [];
+                var cls = [0, 0, 0, 0];
                 for (var i = 0; i < d.raios.length; i++) {
                     var r = d.raios[i];
                     var idade = r[2] + idadeExtra;
-                    if (idade <= JANELA_S) { visiveis.push([r[0], r[1], idade]); }
+                    if (idade <= JANELA_S) {
+                        visiveis.push([r[0], r[1], idade]);
+                        cls[idade <= 300 ? 0 : (idade <= 600 ? 1 : (idade <= 900 ? 2 : 3))] += 1;
+                    }
                 }
                 visiveis.sort(function (a, b) { return b[2] - a[2]; });  // mais antigos primeiro; os novos ficam por cima
                 for (var j = 0; j < visiveis.length; j++) {
@@ -299,7 +311,7 @@ class RaiosGLM(MacroElement):
                     L.circleMarker([v[0], v[1]], {radius: e.r, color: e.b, weight: 0.6, fillColor: e.f, fillOpacity: 0.92,
                                                   opacity: 0.9, interactive: false}).addTo(grupo);
                 }
-                texto(visiveis.length, d);
+                texto(visiveis.length, d, cls);
             }
             function aplicar(d) {
                 if (!d || !d.raios) { return; }
@@ -366,7 +378,9 @@ class RaiosGLM(MacroElement):
         self.janela_s = int(janela_s)
         self.intervalo_ms = int(intervalo_ms)
         if inicial and inicial.get("raios"):
-            recorte = {**inicial, "raios": sorted(inicial["raios"], key=lambda r: r[2])[:6000]}  # só o necessário ao 1º desenho
+            # Só o necessário ao 1º desenho, com a mesma cota por faixa de idade: o amarelo e o verde (mais antigos) não ficam de fora.
+            raios_ini = glm_ao_vivo.amostrar_por_faixa(inicial["raios"], 6000) if glm_ao_vivo else sorted(inicial["raios"], key=lambda r: r[2])[:6000]
+            recorte = {**inicial, "raios": raios_ini}
             self.inicial = json.dumps(recorte, separators=(",", ":"))
         else:
             self.inicial = "null"
@@ -493,6 +507,8 @@ def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: boo
       .rl-raio {{ width:9px; height:9px; border-radius:50%; border:1px solid rgba(15,23,42,.55); margin:0 1px; }}
       .pdea-glm-chip {{ background:rgba(255,255,255,.94); border:1px solid rgba(15,23,42,.12); border-radius:10px; padding:6px 10px;
         font:12px 'Segoe UI', Arial, sans-serif; color:#1f2933; box-shadow:0 4px 14px rgba(15,23,42,.18); line-height:1.35; }}
+      .pdea-glm-chip .g-pt {{ display:inline-block; width:9px; height:9px; border-radius:50%; border:1px solid rgba(15,23,42,.55); margin:0 3px 0 2px; }}
+      .pdea-glm-chip .g-linha {{ font-size:11px; }}
       .pdea-glm-chip .g-n {{ color:#52606d; font-size:11px; }}
       .pdea-glm-chip .g-aviso {{ color:#b45309; font-weight:700; }}
       .rl-item {{ display:flex; align-items:center; gap:7px; margin:3px 0; }}

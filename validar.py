@@ -236,9 +236,12 @@ def testes_glm_ao_vivo() -> None:
         pasta = Path(p)
         arquivos = {}
         t0 = agora.replace(second=0) - timedelta(minutes=50)
+        n_arq = 0
         while t0 <= agora:
-            arquivos[chave(t0)] = nc_bytes(pasta, [-3.7, -23.5, 40.0, -3.7], [-38.5, -46.6, -100.0, -120.0])  # 2 no Brasil, 2 fora
+            # 2 no Brasil (posição diferente em cada arquivo, para a compactação de repetidos não juntá-los) e 2 fora
+            arquivos[chave(t0)] = nc_bytes(pasta, [-3.7 - 0.01 * n_arq, -23.5 - 0.01 * n_arq, 40.0, -3.7], [-38.5, -46.6, -100.0, -120.0])
             t0 += timedelta(seconds=20)
+            n_arq += 1
         ruim = chave(agora.replace(second=0) - timedelta(minutes=1))
         cli = S3Falso(arquivos, ruins=[ruim])
         a = g.AtualizadorGLM(caminho=pasta / "static" / "glm_flashes.txt", cliente=cli, janela_min=30)
@@ -290,6 +293,17 @@ def testes_glm_ao_vivo() -> None:
         a4.iniciar()
         espera = g.dados_atuais(aguardar_s=15)
         assert a4.primeira.is_set() and espera is not None and espera["janela_min"] == 20
+        # Tempestade forte: o limite NÃO pode eliminar os raios mais antigos (amarelo e verde), e a compactação junta repetidos.
+        import random
+
+        rnd = random.Random(1)
+        enorme = [[round(rnd.uniform(-30, 5), 2), round(rnd.uniform(-70, -35), 2), rnd.randint(0, 1199)] for _ in range(60000)]
+        amostra = g.amostrar_por_faixa(enorme, g.MAX_RAIOS)
+        faixas = [sum(1 for r in amostra if r[2] // 300 == k) for k in range(4)]
+        assert len(amostra) <= g.MAX_RAIOS and all(abs(n - g.MAX_RAIOS // 4) <= 1 for n in faixas), faixas  # as 4 cores com a mesma cota
+        assert g.amostrar_por_faixa(enorme[:100], 1000) == enorme[:100]
+        rep = [[-3.7, -38.5, 10], [-3.7, -38.5, 25], [-3.7, -38.5, 70], [-3.8, -38.5, 12]]
+        assert g.compactar(rep) == [[-3.7, -38.5, 10], [-3.7, -38.5, 70], [-3.8, -38.5, 12]]
     print("Testes do GLM ao vivo (coleta incremental, janela de 20 min, antes da abertura, arquivo ruim, gravação atômica): OK")
 
 
@@ -310,7 +324,7 @@ def testes_sem_cadastro() -> None:
         assert not at.exception
         assert any("CAPITAIS" in str(c.value) for c in at.caption)  # o painel já aparece na primeira tela
         assert not any("e-mail" in str(t_.label).lower() for t_ in at.text_input)  # nenhum campo de e-mail
-        assert any("Versão 2026-10-08b" in str(c.value) for c in at.caption)
+        assert any("Versão 2026-10-08c" in str(c.value) for c in at.caption)
     finally:
         modelos.buscar_modelo = original
         if antigo is None:

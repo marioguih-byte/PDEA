@@ -35,6 +35,11 @@ const dorme = (ms) => new Promise(r => setTimeout(r, ms));
   await dorme(1200);
   ok(cont() === 120, "após a atualização, esperava 120, veio " + cont());
   ok(/120 nos/.test(chip()), "chip após atualização: " + chip());
+  // contagem por cor no cartão (vermelho, laranja, amarelo, verde) = contagem das idades do arquivo
+  const idades = Array.from({length: 120}, (_, i) => 30 + (i % 19) * 60);
+  const esperado = [0, 0, 0, 0]; idades.forEach(a => { esperado[a <= 300 ? 0 : (a <= 600 ? 1 : (a <= 900 ? 2 : 3))]++; });
+  const lido = [...w.document.querySelectorAll(".pdea-glm-chip .g-cls")].map(e => parseInt(e.textContent, 10));
+  ok(JSON.stringify(lido) === JSON.stringify(esperado) && lido.every(n => n > 0), "contagem por cor: " + lido + " esperado " + esperado);
   const n1 = contagem;
 
   // 3) arquivo igual: não redesenha e NÃO baixa o arquivo grande de novo (só consulta o meta)
