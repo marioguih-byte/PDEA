@@ -24,6 +24,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import struct
+import subprocess
+import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -35,7 +38,7 @@ from typing import Any, Optional
 import numpy as np
 
 BUCKET = os.environ.get("PDEA_GLM_BUCKET", "noaa-goes19")  # GOES-East desde 07/04/2025
-VERSAO_GLM = "2026-10-08f"  # aparece no texto de ajuda do cartão do mapa (ajuda a ver qual coletor está rodando)
+VERSAO_GLM = "2026-10-08g"  # aparece no texto de ajuda do cartão do mapa (ajuda a ver qual coletor está rodando)
 JANELA_MIN = 20
 TENTATIVAS_ARQUIVO = 3  # um arquivo que falha é tentado de novo nas rodadas seguintes, até este número de vezes
 IDADE_MAX_ARQUIVO_S = 900  # ao ligar, um arquivo de dados mais velho que isto é considerado resto de execução antiga e descartado
@@ -75,7 +78,10 @@ def listar_hora(cliente, hora: datetime, bucket: str = BUCKET) -> list[str]:
             return [c for c in chaves if c and c.endswith(".nc")]
 
 
-_TRAVA_NETCDF = threading.Lock()  # a biblioteca NetCDF/HDF5 não é segura para uso paralelo
+# A biblioteca NetCDF/HDF5 não é segura para uso paralelo. O lock fica em ``sys`` para ser o MESMO mesmo se este módulo for
+# recarregado (o Streamlit recarrega módulos quando o código muda; dois locks diferentes permitiriam leituras simultâneas).
+_TRAVA_NETCDF = getattr(sys, "_pdea_trava_netcdf", None) or threading.Lock()
+sys._pdea_trava_netcdf = _TRAVA_NETCDF
 
 
 def extrair_flashes(conteudo: bytes) -> np.ndarray:
@@ -128,6 +134,75 @@ def amostrar_por_faixa(raios: list[list], maximo: int, faixa_s: int = FAIXA_S, n
     return saida
 
 
+CODIGO_FILHO = r"""
+import json, struct, sys
+import numpy as np
+import netCDF4
+LA0, LA1, LO0, LO1 = __CAIXA__
+dados = sys.stdin.buffer.read()
+n = struct.unpack_from("<I", dados, 0)[0]
+pos, saida = 4, []
+for _ in range(n):
+    tam = struct.unpack_from("<Q", dados, pos)[0]
+    pos += 8
+    blob = dados[pos:pos + tam]
+    pos += tam
+    try:
+        with netCDF4.Dataset("glm.nc", mode="r", memory=blob) as ds:
+            lat = np.ma.filled(ds.variables["flash_lat"][:], np.nan).astype(float)
+            lon = np.ma.filled(ds.variables["flash_lon"][:], np.nan).astype(float)
+        ok = np.isfinite(lat) & np.isfinite(lon) & (lat >= LA0) & (lat <= LA1) & (lon >= LO0) & (lon <= LO1)
+        saida.append([[round(float(a), 2), round(float(b), 2)] for a, b in zip(lat[ok], lon[ok])])
+    except Exception:
+        saida.append(None)
+sys.stdout.write(json.dumps(saida))
+""".replace("__CAIXA__", repr(CAIXA_BRASIL))
+
+
+def _filho(conteudos: list[bytes], timeout: float) -> Optional[list]:
+    """Roda o processo filho sobre uma lista de arquivos. Devolve a lista de resultados ou None se o filho falhou/caiu."""
+    entrada = struct.pack("<I", len(conteudos)) + b"".join(struct.pack("<Q", len(c)) + c for c in conteudos)
+    try:
+        r = subprocess.run([sys.executable, "-c", CODIGO_FILHO], input=entrada, capture_output=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode != 0:  # por exemplo, falha grave (segfault) da biblioteca HDF5: só o filho cai; o painel segue
+        return None
+    try:
+        itens = json.loads(r.stdout.decode("utf-8"))
+    except ValueError:
+        return None
+    return itens if isinstance(itens, list) and len(itens) == len(conteudos) else None
+
+
+def _isolado(conteudos: list[bytes], timeout: float) -> list:
+    """Como _filho, mas se o lote falhar divide ao meio até achar o arquivo que derruba o filho (só ele fica como falha)."""
+    itens = _filho(conteudos, timeout)
+    if itens is not None:
+        return itens
+    if len(conteudos) == 1:
+        return [None]
+    meio = len(conteudos) // 2
+    return _isolado(conteudos[:meio], timeout) + _isolado(conteudos[meio:], timeout)
+
+
+def extrair_isolado(conteudos: list[Optional[bytes]], timeout: float = 180.0) -> list[Optional[np.ndarray]]:
+    """Lê os arquivos GLM (NetCDF/HDF5) em um PROCESSO FILHO e devolve, por arquivo, a matriz (n, 2) de [lat, lon] ou None.
+
+    A leitura nunca roda dentro do servidor do painel: a biblioteca HDF5 é nativa e uma falha grave (segfault) derrubaria todo o
+    app ("Oh no. Error running app"). No filho, o pior caso é perder o arquivo que causou o problema.
+    """
+    saida: list[Optional[np.ndarray]] = [None] * len(conteudos)
+    validos = [(i, c) for i, c in enumerate(conteudos) if c is not None]
+    if not validos:
+        return saida
+    itens = _isolado([c for _, c in validos], timeout)
+    for (i, _), item in zip(validos, itens):
+        if item is not None:
+            saida[i] = np.array(item, dtype=float).reshape(-1, 2)
+    return saida
+
+
 class AtualizadorGLM:
     """Mantém os flashes dos últimos ``janela_min`` minutos e grava o arquivo lido pelo mapa."""
 
@@ -144,6 +219,7 @@ class AtualizadorGLM:
         self.ultimo: Optional[dict[str, Any]] = None
         self.ultimo_erro: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
+        self._parar = threading.Event()
         self.primeira = threading.Event()  # sinaliza o fim da primeira coleta (com sucesso ou não)
 
     # -------------------------------------------------------------- coleta
@@ -175,7 +251,7 @@ class AtualizadorGLM:
             # segura para várias threads e derruba o processo (erro de barramento) se for chamada em paralelo.
             with ThreadPoolExecutor(self.trabalhadores) as ex:
                 conteudos = list(ex.map(lambda tc: self._seguro(tc[1]), candidatos))
-            resultados = [self._ler(c) for c in conteudos]
+            resultados = extrair_isolado(conteudos)  # leitura NetCDF em processo filho: uma falha grave não derruba o painel
             with self._lock:
                 for (t, chave), arr in zip(candidatos, resultados):
                     if arr is None:
@@ -261,14 +337,20 @@ class AtualizadorGLM:
             return 30.0
         return max(self.intervalo_s - (agora_ts % self.intervalo_s) + 20, 5.0)
 
+    def parar(self) -> None:
+        """Pede à thread de coleta que termine (a espera entre rodadas é interrompida na hora)."""
+        self._parar.set()
+
     def _laco(self) -> None:
-        while True:
+        while not self._parar.is_set():
             self.rodada()
-            time.sleep(self.espera_s())
+            if self._parar.wait(self.espera_s()):
+                break
 
     def iniciar(self) -> "AtualizadorGLM":
         if self._thread is None or not self._thread.is_alive():
             self.limpar_arquivos_antigos()
+            self._parar.clear()
             self._thread = threading.Thread(target=self._laco, name="pdea-glm", daemon=True)
             self._thread.start()
         return self
@@ -278,12 +360,33 @@ _UNICO: Optional[AtualizadorGLM] = None
 _TRAVA = threading.Lock()
 
 
+def _substituir_coletor_antigo() -> None:
+    """Ao (re)carregar o módulo, para o coletor deixado pela versão anterior do módulo.
+
+    O Streamlit recarrega módulos quando o código muda, mas threads criadas antes continuam vivas: sem isto, cada atualização do
+    app deixaria mais uma thread de coleta rodando, todas lendo arquivos ao mesmo tempo.
+    """
+    antigo = getattr(sys, "_pdea_glm", None)
+    if antigo is not None and not isinstance(antigo, AtualizadorGLM):
+        parar = getattr(antigo, "parar", None)
+        if callable(parar):
+            try:
+                parar()
+            except Exception:  # noqa: BLE001
+                pass
+    sys._pdea_glm = None
+
+
+_substituir_coletor_antigo()
+
+
 def obter_atualizador(iniciar: bool = True) -> AtualizadorGLM:
     """Instância única por processo (várias sessões do painel compartilham a mesma coleta)."""
     global _UNICO
     with _TRAVA:
         if _UNICO is None:
             _UNICO = AtualizadorGLM()
+            sys._pdea_glm = _UNICO
         if iniciar:
             _UNICO.iniciar()
         return _UNICO

@@ -30,7 +30,7 @@ from streamlit_folium import st_folium
 # Carimbo de versão: fica no texto de ajuda (passar o mouse) dos créditos da barra lateral, para conferir qual cópia está no ar.
 # Alcance ao redor das capitais (km, cor): os mesmos raios usados na verificação contra o GLM. Linhas grossas e tracejadas.
 ALCANCES_KM = ((30, "#2ecc40"), (50, "#ffd400"), (100, "#e11d1d"))  # verde, amarelo, vermelho
-VERSAO_APP = "2026-10-08f"  # aparece só ao passar o mouse nos créditos da barra lateral
+VERSAO_APP = "2026-10-08g"  # aparece só ao passar o mouse nos créditos da barra lateral
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -437,6 +437,15 @@ def _html_canal_glm(dados: dict, erro: Optional[str] = None) -> str:
             "w.__pdeaGlm=" + js + ";})();</script>")
 
 
+def _incorporar_script(html: str) -> None:
+    """Insere um iframe mínimo que só executa o script. ``st.components.v1.html`` está obsoleto (aviso no log do Streamlit e
+    remoção anunciada), então usa ``st.iframe`` quando existe e cai para o antigo só em versões que ainda não o têm."""
+    if hasattr(st, "iframe"):
+        st.iframe(html, height=1)
+    else:
+        components.html(html, height=0)
+
+
 @st.fragment(run_every=30)
 def canal_glm() -> None:
     """Entrega ao navegador, a cada coleta nova (de 5 em 5 min), os raios do servidor: não depende do arquivo estático.
@@ -451,7 +460,7 @@ def canal_glm() -> None:
     if not dados or st.session_state.get("glm_enviado") == dados.get("gerado"):
         return
     st.session_state["glm_enviado"] = dados["gerado"]
-    components.html(_html_canal_glm(dados, coletor.ultimo_erro), height=0)
+    _incorporar_script(_html_canal_glm(dados, coletor.ultimo_erro))
 
 
 class AjusteBrasil(MacroElement):

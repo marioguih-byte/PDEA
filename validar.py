@@ -524,6 +524,94 @@ def testes_legenda_retratil() -> None:
     print("Teste da legenda retrátil: OK")
 
 
+def testes_isolamento_netcdf() -> None:
+    """A leitura NetCDF roda em processo filho (uma falha grave não derruba o painel) e só existe um coletor por processo."""
+    try:
+        import netCDF4
+    except ImportError:
+        print("Testes do isolamento do NetCDF: PULADOS (instale netCDF4)")
+        return
+    import sys as _sys
+    import time as _time
+
+    import glm_ao_vivo as g
+
+    def nc_bytes(pasta: Path, lats, lons) -> bytes:
+        f = pasta / "x.nc"
+        with netCDF4.Dataset(f, "w", format="NETCDF4") as ds:
+            ds.createDimension("n", len(lats))
+            for nome, vals in (("flash_lat", lats), ("flash_lon", lons)):
+                ds.createVariable(nome, "f4", ("n",))[:] = vals
+        return f.read_bytes()
+
+    with tempfile.TemporaryDirectory() as p:
+        pasta = Path(p)
+        bom = nc_bytes(pasta, [-3.7, -23.5, 40.0], [-38.5, -46.6, -100.0])  # 2 no Brasil, 1 fora
+        res = g.extrair_isolado([bom, None, b"isto nao e netcdf", bom])
+        assert res[1] is None and res[2] is None  # ausente e corrompido viram falha, sem exceção
+        assert res[0].shape == (2, 2) and res[3].shape == (2, 2) and abs(res[0][0][0] - (-3.7)) < 1e-6
+        assert g.extrair_isolado([]) == [] and g.extrair_isolado([None]) == [None]
+
+    # um arquivo que derruba o processo filho (simulado com SIGSEGV) só se perde a si mesmo; o processo pai segue vivo
+    codigo_original = g.CODIGO_FILHO
+    try:
+        g.CODIGO_FILHO = """
+import json, os, signal, struct, sys
+d = sys.stdin.buffer.read()
+n = struct.unpack_from("<I", d, 0)[0]
+pos, saida = 4, []
+for _ in range(n):
+    tam = struct.unpack_from("<Q", d, pos)[0]; pos += 8
+    blob = d[pos:pos + tam]; pos += tam
+    if blob == b"BOOM":
+        os.kill(os.getpid(), signal.SIGSEGV)
+    saida.append([[1.0, 2.0]])
+sys.stdout.write(json.dumps(saida))
+"""
+        res = g.extrair_isolado([b"a", b"b", b"BOOM", b"c", b"d"])
+        assert [r is None for r in res] == [False, False, True, False, False], res  # só o arquivo que derruba o filho vira falha
+        assert res[0].tolist() == [[1.0, 2.0]]
+        assert g.extrair_isolado([b"BOOM"]) == [None]
+    finally:
+        g.CODIGO_FILHO = codigo_original
+
+    # recarregar o módulo para o coletor da versão anterior (a thread antiga continuaria lendo arquivos ao mesmo tempo)
+    class Antigo:
+        parado = False
+
+        def parar(self):
+            Antigo.parado = True
+
+    _sys._pdea_glm = Antigo()
+    g._substituir_coletor_antigo()
+    assert Antigo.parado and _sys._pdea_glm is None
+    novo = g.AtualizadorGLM(cliente=object())
+    _sys._pdea_glm = novo
+    g._substituir_coletor_antigo()  # instância da classe ATUAL (mesma versão do módulo) é substituída só por quem a cria de novo
+    assert _sys._pdea_glm is None and not novo._parar.is_set()
+    assert g._TRAVA_NETCDF is _sys._pdea_trava_netcdf  # o lock é um só, mesmo com o módulo recarregado
+
+    # parar() interrompe a espera entre rodadas imediatamente
+    class S3Vazio:
+        def get(self, url, params=None, timeout=None):
+            class R:
+                status_code, content = 200, b'<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListBucketResult>'
+
+                def raise_for_status(self):
+                    pass
+            return R()
+
+    with tempfile.TemporaryDirectory() as p:
+        c = g.AtualizadorGLM(caminho=Path(p) / "static" / "glm_flashes.txt", cliente=S3Vazio())
+        c.iniciar()
+        assert c.primeira.wait(10) and c._thread.is_alive()
+        t0 = _time.time()
+        c.parar()
+        c._thread.join(5)
+        assert not c._thread.is_alive() and _time.time() - t0 < 3  # não espera os minutos até a próxima rodada
+    print("Testes do isolamento do NetCDF (processo filho, falha grave contida, um só coletor, parar): OK")
+
+
 def testes_ampliados() -> None:
     # Heurística ampliada: pontos limitados, sem efeito com peso 0 ou sem dados extras.
     assert ajuste_extras(None) == 0 and ajuste_extras({}) == 0
@@ -743,6 +831,7 @@ if __name__ == "__main__":
     testes_manter_acordado()
     testes_canal_e_rolagem()
     testes_legenda_retratil()
+    testes_isolamento_netcdf()
     testes_ampliados()
     if "--online" in sys.argv:
         from modelos import ErroBuscaModelo

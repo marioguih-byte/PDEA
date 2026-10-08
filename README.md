@@ -99,11 +99,12 @@ Limites: é um **contorno** de uma regra do plano gratuito, não um recurso gara
 - **Requisitos:** `netCDF4` (em `requirements.txt`) e `server.enableStaticServing = true` (em `.streamlit/config.toml`). Sem eles o painel funciona, só sem a camada.
 - **Streamlit Community Cloud:** a coleta roda enquanto o app está ativo; quando o app hiberna por inatividade, a thread para, e a camada mostra "aguardando dados" até alguém acordar o app e a primeira coleta terminar (cerca de um minuto). Veja a seção sobre manter o app acordado.
 - **Barra de rolagem:** a barra lateral e a da página são mais grossas (16 px no Chrome/Edge; no Firefox usa a espessura padrão, `scrollbar-width: auto`, em vez da fina).
-- **Cuidado técnico:** a leitura NetCDF/HDF5 é feita um arquivo por vez, porque a biblioteca não é segura para várias threads.
+- **Leitura em processo separado (importante):** a biblioteca NetCDF/HDF5 é nativa e **não é segura para várias threads**: leituras simultâneas derrubam o processo inteiro com `Segmentation fault`, e o Streamlit Cloud mostra "Oh no. Error running app" (isso aconteceu em 08/10/2026 depois de várias atualizações de código seguidas, quando o app antigo deixava coletores velhos rodando junto com o novo). Por isso o coletor lê os arquivos em um **processo filho** (`extrair_isolado`): se a biblioteca falhar, só o filho cai; o lote é dividido ao meio até achar o arquivo problemático, que vira uma falha isolada. Além disso, ao recarregar o módulo, a versão nova **para** o coletor da versão anterior (`parar()`), o lock do NetCDF é um só por processo e só existe um coletor por processo.
+- **`st.iframe`:** o canal da página usa `st.iframe` (o `st.components.v1.html` está obsoleto e anunciado para remoção) e só cai para o antigo em versões do Streamlit que ainda não têm o novo.
 
 ## Como confirmar a versão no ar
 
-A barra lateral mostra os créditos (Elaborado por: Mário Henrique e Mayara Christine). O número da versão fica só no texto de ajuda: passe o mouse sobre os créditos e aparece "Versão 2026-10-08f". Se não for esse, o que está rodando é uma cópia antiga: envie **todos** os arquivos ao GitHub (inclusive `glm_ao_vivo.py`, `assets/`, `static/`, `requirements.txt` e `.streamlit/config.toml`), com o `app.py` na **raiz** do repositório, e use *Manage app > Reboot app* no Streamlit.
+A barra lateral mostra os créditos (Elaborado por: Mário Henrique e Mayara Christine). O número da versão fica só no texto de ajuda: passe o mouse sobre os créditos e aparece "Versão 2026-10-08g". Se não for esse, o que está rodando é uma cópia antiga: envie **todos** os arquivos ao GitHub (inclusive `glm_ao_vivo.py`, `assets/`, `static/`, `requirements.txt` e `.streamlit/config.toml`), com o `app.py` na **raiz** do repositório, e use *Manage app > Reboot app* no Streamlit.
 
 ## Raios em tempo real (GLM): detalhes
 
