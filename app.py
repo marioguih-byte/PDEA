@@ -38,7 +38,13 @@ RESPONSAVEIS = (
 # Fonte dos dados: o painel usa um só "modelo", o Best Match da API do Open-Meteo, exibido como "Open-Meteo API".
 MODELO_PADRAO = "best_match"
 NOME_FONTE = "Open-Meteo API"
-VERSAO_APP = "2026-10-08k"  # aparece só ao passar o mouse nos créditos da barra lateral
+# Método do score: o padrão (CAPE × chuva, Romps et al.) ou a heurística por faixas de CAPE, Lifted Index e CIN (PDEA-H).
+METODOS_SCORE = {"CAPE × chuva (padrão)": "capexp", "Heurístico: CAPE, LI e CIN": "pontos"}
+DESCRICAO_METODO = {
+    "capexp": "Produto CAPE × chuva prevista, convertido em uma escala de 0 a 100 (Romps et al., 2014). É o método padrão.",
+    "pontos": "Soma de pontos por faixas de CAPE, Lifted Index e CIN. Não usa a chuva prevista.",
+}
+VERSAO_APP = "2026-10-08m"  # aparece só ao passar o mouse nos créditos da barra lateral
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -71,10 +77,20 @@ try:
     from relatorio import gerar_pdf, gerar_png
     from risco_raio import (
         CORES_NIVEL,
+        ENERGIA_MINIMA_CAPE,
+        FAIXAS_CAPE,
+        FAIXAS_CIN,
+        FAIXAS_LI,
         ICONES,
         NIVEIS_RISCO,
+        NOMES_METODO,
+        PONTOS_CIN_MAXIMO,
+        PONTOS_LI_MINIMO,
+        PONTOS_MAX_LI_SEM_ENERGIA,
         ROTULOS,
         ParametrosRisco,
+        calcular_risco,
+        detalhar_risco,
     )
     from unidades import ESTACOES
 except ImportError as _erro_import:
@@ -179,6 +195,7 @@ def _aviso_defasado(dados: dict[str, Any], motivo: str) -> str:
 def _inicializar_estado() -> None:
     valores_iniciais = {
         "modelo_anterior": None,
+        "metodo_anterior": None,
         "estacao_popup": None,
         "abrir_popup": False,
         "ultimo_clique_mapa": None,
@@ -964,11 +981,79 @@ def _tabela_horaria(nome: str, ctx: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(linhas)
 
 
+def _pts(valor: float) -> str:
+    return f"{valor:+.0f}" if valor else "0"
+
+
+def _g(x: float) -> str:
+    return f"{x:g}"
+
+
+def _html_metodo_heuristico() -> str:
+    """Tabelas do método heurístico, geradas a partir das faixas usadas no cálculo (nunca ficam diferentes do código)."""
+    cape = sorted(FAIXAS_CAPE, reverse=True)
+    linhas_cape, acima = [], None
+    for limite, pontos in cape:
+        faixa = f"≥ {_g(limite)}" if acima is None else f"{_g(limite)} a {_g(acima - 1)}"
+        linhas_cape.append((faixa, pontos))
+        acima = limite
+    linhas_cape.append((f"< {_g(cape[-1][0])}", 0.0))
+    linhas_li, acima = [], None
+    for limite, pontos in FAIXAS_LI:
+        faixa = f"> {_g(limite)}" if acima is None else f"> {_g(limite)} a {_g(acima)}"
+        linhas_li.append((faixa, pontos))
+        acima = limite
+    linhas_li.append((f"≤ {_g(acima)}", PONTOS_LI_MINIMO))
+    linhas_cin, abaixo = [], 0.0
+    for limite, pontos in FAIXAS_CIN:
+        faixa = f"< {_g(limite)}" if abaixo == 0.0 else f"{_g(abaixo)} a {_g(limite - 1)}"
+        linhas_cin.append((faixa, pontos))
+        abaixo = limite
+    linhas_cin.append((f"≥ {_g(abaixo)}", PONTOS_CIN_MAXIMO))
+
+    def tabela(titulo: str, unidade: str, linhas: list[tuple[str, float]]) -> str:
+        corpo = "".join(f"<tr><td>{escape(faixa)} {unidade}</td><td>{_pts(p)} pts</td></tr>" for faixa, p in linhas)
+        return f"<div class='mh-bloco'><div class='mh-tit'>{titulo}</div><table class='expl'>{corpo}</table></div>"
+
+    niveis, inferior = [], None
+    for limite, rotulo, _ in NIVEIS_RISCO:
+        if inferior is None:
+            niveis.append(f"{rotulo}: < {limite}")
+        elif limite > 100:
+            niveis.append(f"{rotulo}: ≥ {inferior}")
+        else:
+            niveis.append(f"{rotulo}: {inferior} a < {limite}")
+        inferior = limite
+    return (
+        "<div class='mh-grade'>"
+        + tabela("CAPE (energia disponível)", "J/kg", linhas_cape)
+        + tabela("Lifted Index (instabilidade)", "°C", linhas_li)
+        + tabela("CIN (inibição, valor absoluto)", "J/kg", linhas_cin)
+        + "</div>"
+        + f"<div class='nota-tab'>Níveis (mesma escala do método padrão): {escape(' · '.join(niveis))}.</div>"
+    )
+
+
+def _exemplos_heuristica() -> tuple[str, str]:
+    """Exemplos numéricos calculados pelo próprio código (por isso sempre coerentes com as faixas)."""
+    parametros = ParametrosRisco(metodo="pontos")
+    d = detalhar_risco(2000.0, -4.0, -30.0, parametros)
+    nivel = calcular_risco(2000.0, -4.0, -30.0, parametros)[1]
+    ex1 = (f"CAPE 2000 J/kg ({_pts(d['pts_cape'])}) + LI -4 °C ({_pts(d['pts_li'])}) + CIN 30 J/kg ({_pts(d['pts_cin'])}) "
+           f"= {d['score']:.0f} pontos → {nivel}.")
+    s = detalhar_risco(200.0, -4.0, -10.0, parametros)
+    sem_regra = 0.0 + 22.0 + 20.0  # CAPE 200 (0) + LI -4 (22) + CIN 10 (20), sem a regra "sem energia"
+    nivel_s = calcular_risco(200.0, -4.0, -10.0, parametros)[1]
+    ex2 = (f"CAPE 200 J/kg (abaixo de {_g(ENERGIA_MINIMA_CAPE)}), LI -4 °C, CIN 10 J/kg: sem a regra seriam {sem_regra:.0f} pontos "
+           f"(Moderado); com ela o LI soma no máximo {_g(PONTOS_MAX_LI_SEM_ENERGIA)} e o CIN não soma, e o score fica em {s['score']:.0f} → {nivel_s}.")
+    return ex1, ex2
+
+
 def _html_explicacao(ex: dict[str, Any]) -> str:
     """Tabela (HTML em uma linha por bloco) com a contribuição de cada componente do score."""
     if ex["score"] is None:
         if ex.get("sem_chuva"):
-            return "<div class='nota-tab'>O modelo selecionado não entregou precipitação para esta hora: sem ela o produto CAPE × chuva não pode ser calculado.</div>"
+            return "<div class='nota-tab'>A fonte não entregou precipitação para esta hora: sem ela o produto CAPE × chuva não pode ser calculado (o método heurístico não precisa de chuva).</div>"
         return "<div class='nota-tab'>Sem dados de CAPE para esta hora.</div>"
     if ex.get("metodo") == "capexp":
         fc = ex["fator_cape_regiao"]
@@ -1059,6 +1144,7 @@ def abrir_detalhamento(nome: str, ctx: dict[str, Any]) -> None:
             st.markdown(f"<div class='dlg-resumo'>{''.join(cartoes)}</div>", unsafe_allow_html=True)
 
             st.markdown("#### Como o score foi calculado")
+            st.caption(f"Método: {ctx['metodo_nome']} · explicação completa no fim da página.")
             st.markdown(_html_explicacao(explicar_hora(
                 ctx["dados"].get(nome, {}), ctx["deslocamento"], str(agora["UF"]),
                 ctx["parametros"], ctx["regioes"], ctx["gate"],
@@ -1210,6 +1296,8 @@ def renderizar_estilo() -> None:
         .expl td { padding:.28rem .55rem; border-bottom:1px solid #2b323c; color:#d5dbe4; }
         .expl td:first-child { white-space:nowrap; color:#a9b3c1; }
         .expl td:last-child { text-align:right; font-weight:700; color:#fff; white-space:nowrap; }
+        .mh-grade { display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:.4rem 1.2rem; margin:.3rem 0 .4rem; }
+        .mh-tit { font-size:.78rem; font-weight:700; letter-spacing:.04em; color:#9fb0c6; text-transform:uppercase; margin:.2rem 0 .1rem; }
         .nota-tab { color:#a9b3c1; font-size:.82rem; margin:.1rem 0 .5rem; }
         .rodape-sec { margin-top:.4rem; color:#8895a7; font-size:.78rem; }
         @media (max-width: 760px) {
@@ -1366,7 +1454,7 @@ def secao_mapa(tabela: pd.DataFrame, ctx: dict[str, Any], estilo: str, mostrar_s
         ctx["cores"],
         mostrar_score,
         ctx["rotulo_hora"],
-        ctx["fonte"],
+        ctx["fonte_mapa"],
         ctx["divisas"],
         ctx["goes"],
         ctx["goes_opacidade"],
@@ -1429,6 +1517,17 @@ def main() -> None:
                 st.session_state["ultimo_clique_mapa"] = None
                 recriar_mapa()
 
+        with st.expander("Método do score", expanded=True):
+            metodo_rotulo = st.radio(
+                "Método",
+                options=list(METODOS_SCORE),
+                key="metodo_score",
+                help="O método padrão usa CAPE × chuva prevista. O heurístico soma pontos por faixas de CAPE, Lifted Index e CIN, "
+                     "sem usar a chuva. A explicação completa está no fim da página.",
+            )
+            metodo_id_score = METODOS_SCORE[metodo_rotulo]
+            st.caption(f"{DESCRICAO_METODO[metodo_id_score]} Explicação no fim da página.")
+
         with st.expander("Mapa"):
             estilo = st.selectbox("Estilo do mapa", options=list(TILES), index=0)
             mostrar_score = st.toggle("Mostrar o score dentro das bolinhas", value=True)
@@ -1455,8 +1554,15 @@ def main() -> None:
         st.session_state["abrir_popup"] = False
         recriar_mapa()
 
+    if metodo_id_score != st.session_state["metodo_anterior"]:
+        st.session_state["metodo_anterior"] = metodo_id_score
+        st.session_state["ultimo_clique_mapa"] = None
+        st.session_state["abrir_popup"] = False
+        recriar_mapa()
+
     cores = CORES_NIVEL
-    parametros = ParametrosRisco()  # regra original (sem ajustes de sensibilidade)
+    parametros = ParametrosRisco(metodo=metodo_id_score)  # sem ajustes de sensibilidade; só o método muda
+    metodo_nome = NOMES_METODO[metodo_id_score]
     regioes = carregar_regioes()  # fatores de CAPE/LI por UF (config_regioes.json; neutros por padrão)
     gate = carregar_gate()  # exigência de chuva prevista nas UFs do Nordeste (config_regioes.json)
 
@@ -1478,10 +1584,10 @@ def main() -> None:
         except Exception as erro:
             st.sidebar.caption(f"Histórico indisponível: {erro}")
     extras_disponiveis = bool(dados.get("_extras"))
-    if not extras_disponiveis:
+    if not extras_disponiveis and metodo_id_score == "capexp":
         st.sidebar.warning(
-            f"Sem dados de precipitação da {NOME_FONTE}: o escore usa CAPE × chuva e, sem chuva, não pode ser calculado "
-            f"({dados.get('_erro_extras') or 'sem detalhe'}). Tente atualizar os dados em instantes."
+            f"Sem dados de precipitação da {NOME_FONTE}: o método CAPE × chuva não pode ser calculado "
+            f"({dados.get('_erro_extras') or 'sem detalhe'}). Tente atualizar os dados em instantes ou escolha o método heurístico, que não usa a chuva."
         )
 
     fonte = NOME_FONTE
@@ -1522,6 +1628,9 @@ def main() -> None:
         "rotulo_hora": rotulo_hora,
         "modelo_id": modelo_id,
         "fonte": fonte,
+        "metodo": metodo_id_score,
+        "metodo_nome": metodo_nome,
+        "fonte_mapa": f"{fonte} · {metodo_nome}",
         "divisas": divisas,
         "goes": goes,
         "goes_opacidade": goes_opacidade,
@@ -1564,6 +1673,7 @@ def main() -> None:
 
     pilulas = [
         _pilula("Fonte", escape(fonte)),
+        _pilula("Método", escape(metodo_nome), "Método de cálculo do score (veja a explicação no fim da página)"),
         _pilula("Hora exibida", f"{escape(rotulo_hora)}{escape(sufixo_hora)}"),
     ]
     if minutos is not None:
@@ -1608,6 +1718,9 @@ def main() -> None:
         if sem_dados:
             texto += f" ({sem_dados} capital(is) sem dados.)"
         st.markdown(f"<div class='destaque' style='--cor:{cor_destaque}'>{texto}</div>", unsafe_allow_html=True)
+        if metodo_id_score == "pontos":
+            st.info("**Método heurístico:** o score soma pontos por faixas de CAPE, Lifted Index e CIN e não usa a chuva prevista. "
+                    "A explicação está no bloco *Método heurístico* no fim da página.")
         st.markdown("<div class='secao'>Mapa das capitais</div>", unsafe_allow_html=True)
 
     # ------------------------------------------------------------------ mapa (fragmento)
@@ -1655,7 +1768,7 @@ def main() -> None:
             c1, c2 = st.columns(2)
             c1.download_button(
                 "Baixar tabela atual (CSV)",
-                _csv_br(tabela.drop(columns=["Latitude", "Longitude"]).assign(**{"Horário": rotulo_hora, "Fonte": fonte})),
+                _csv_br(tabela.drop(columns=["Latitude", "Longitude"]).assign(**{"Horário": rotulo_hora, "Fonte": fonte, "Método": metodo_nome})),
                 file_name=f"pdea_tabela_{carimbo}.csv",
                 mime="text/csv",
                 on_click="ignore",
@@ -1673,7 +1786,7 @@ def main() -> None:
             st.markdown("<div class='rodape-sec'>Mapa estático e relatório (mapa + ranking de todas as capitais):</div>", unsafe_allow_html=True)
             if st.button("Gerar mapa PNG e relatório PDF", width="stretch"):
                 titulo = "PDEA — Risco de raios"
-                subtitulo = f"{rotulo_hora} · fonte: {fonte} · gerado em {datetime.now(TZ_BRASILIA):%d/%m/%Y %H:%M}"
+                subtitulo = f"{rotulo_hora} · fonte: {fonte} · método: {metodo_nome} · gerado em {datetime.now(TZ_BRASILIA):%d/%m/%Y %H:%M}"
                 with st.spinner("Gerando arquivos..."):
                     st.session_state["relatorio"] = {
                         "png": gerar_png(tabela, titulo, subtitulo),
@@ -1695,8 +1808,8 @@ def main() -> None:
 
     with st.expander("Como interpretar o painel"):
         st.write(
-            "O score estima o potencial de descargas em cada capital a partir do produto CAPE × taxa de chuva previstos pelo "
-            "modelo numérico, um indicador da taxa de descargas descrito por Romps et al. (2014, 2018): sem energia "
+            "Há dois métodos de score (barra lateral, bloco *Método do score*). **Padrão:** o score estima o potencial de descargas "
+            "em cada capital a partir do produto CAPE × taxa de chuva previstos pelo modelo numérico, um indicador da taxa de descargas descrito por Romps et al. (2014, 2018): sem energia "
             "(CAPE) ou sem chuva prevista, o score é baixo. O produto é convertido em uma escala de 0 a 100, e os limiares "
             "dos níveis ainda são provisórios, em calibração com observações do satélite GOES (GLM). O método foi validado "
             "sobre terra nos Estados Unidos e, globalmente, sobre continentes, mas não reproduz a menor atividade de descargas sobre "
@@ -1704,9 +1817,42 @@ def main() -> None:
             "Rio de Janeiro, Natal, Florianópolis e Aracaju) recebem uma correção provisória que reduz o produto. Não considera convecção com pouco CAPE (por "
             "exemplo, sistemas frontais). A seta indica a tendência do score nas próximas 6 h (▲ sobe, ▼ desce, ▬ estável). "
             "É uma previsão de modelo, não uma detecção: o painel não substitui alertas oficiais (Defesa Civil, INMET) nem "
-            "sistemas de detecção de descargas atmosféricas. Em caso de trovoada, procure abrigo em local fechado."
+            "sistemas de detecção de descargas atmosféricas. **Heurístico:** soma de pontos por faixas de CAPE, Lifted Index e CIN, sem usar "
+            "a chuva prevista (explicação no bloco *Método heurístico*, logo abaixo). Em caso de trovoada, procure abrigo em local fechado."
         )
         st.caption(f"Última renderização local: {datetime.now(TZ_BRASILIA).strftime('%d/%m/%Y %H:%M:%S')} (America/Sao_Paulo).")
+
+    with st.expander("Método heurístico (CAPE, LI e CIN): como funciona"):
+        ex1, ex2 = _exemplos_heuristica()
+        st.markdown(
+            "**O que é.** É o primeiro método do PDEA (PDEA-H), mantido como alternativa e para comparação. Em vez de usar a chuva prevista, "
+            "ele avalia três parâmetros de instabilidade do perfil atmosférico previsto, **CAPE**, **Lifted Index (LI)** e **CIN**, e "
+            "**soma pontos** por faixas. O score é essa soma, limitada a 0-100, e os níveis (Nenhum a Severo) são os mesmos do método padrão."
+        )
+        st.markdown(
+            "**O que cada parâmetro diz.** O CAPE mede a energia disponível para a convecção (quanto maior, mais intensa pode ser a tempestade). "
+            "O LI compara a temperatura de uma parcela de ar elevada com a do ambiente a 500 hPa: quanto mais negativo, mais instável. "
+            "O CIN é a energia que ainda precisa ser vencida para a convecção começar: quanto maior, mais ela é inibida."
+        )
+        st.markdown(_html_metodo_heuristico(), unsafe_allow_html=True)
+        st.markdown(
+            f"**Regra \"sem energia\".** Se o CAPE é menor que {_g(ENERGIA_MINIMA_CAPE)} J/kg não há energia para uma tempestade: "
+            f"o LI soma no máximo {_g(PONTOS_MAX_LI_SEM_ENERGIA)} pontos e o CIN nunca soma (só pode subtrair). Assim, ar estável com CIN baixo "
+            "não vira risco \"Moderado\".\n\n"
+            f"**Exemplos.** {ex1}\n\n{ex2}"
+        )
+        st.markdown(
+            "**Limites e cuidados.**\n\n"
+            "- As faixas são **empíricas**: foram definidas pela equipe do PDEA a partir de valores usuais de CAPE, LI e CIN, sem um artigo "
+            "de referência específico, e **ainda não foram calibradas** com os raios observados no Brasil; os níveis são provisórios, "
+            "como no método padrão.\n"
+            "- Não usa a chuva prevista: pode indicar risco alto onde o modelo não prevê chuva (e baixo onde há chuva com pouco CAPE).\n"
+            "- Não aplica a correção das capitais litorâneas do método padrão.\n"
+            "- Como o método padrão, não captura convecção com pouco CAPE (por exemplo, sistemas frontais) e é uma previsão de modelo, "
+            "não uma detecção: não substitui alertas oficiais.\n"
+            "- O método padrão (CAPE × chuva) tem base na literatura (Romps et al., 2014, 2018) e é o recomendado; o heurístico serve para "
+            "comparar e para dar mais transparência ao cálculo. A validação dos dois contra o GLM está em andamento."
+        )
 
     with st.expander(f"Fonte dos dados: {NOME_FONTE}"):
         st.markdown(

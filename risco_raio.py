@@ -153,43 +153,38 @@ ENERGIA_MINIMA_CAPE = 300.0  # J/kg
 PONTOS_MAX_LI_SEM_ENERGIA = 5.0
 
 
+# Faixas da heurística (PDEA-H). Fonte ÚNICA: o cálculo abaixo e a explicação mostrada no painel leem estas tabelas.
+# As faixas são empíricas (definidas pela equipe a partir de valores usuais, sem artigo de referência) e NÃO foram calibradas
+# com observações de descargas no Brasil.
+FAIXAS_CAPE: list[tuple[float, float]] = [(3500.0, 45.0), (2500.0, 34.0), (1000.0, 22.0), (300.0, 10.0)]  # CAPE >= limite -> pontos (abaixo de 300: 0)
+FAIXAS_LI: list[tuple[float, float]] = [(2.0, 0.0), (0.0, 5.0), (-2.0, 12.0), (-6.0, 22.0), (-9.0, 30.0)]  # LI > limite -> pontos
+PONTOS_LI_MINIMO = 35.0  # LI <= -9 °C
+FAIXAS_CIN: list[tuple[float, float]] = [(25.0, 20.0), (50.0, 10.0), (100.0, 0.0), (200.0, -15.0)]  # |CIN| < limite -> pontos
+PONTOS_CIN_MAXIMO = -30.0  # |CIN| >= 200 J/kg
+
+NOMES_METODO = {"capexp": "CAPE × chuva", "pontos": "Heurístico (CAPE, LI e CIN)"}
+
+
 def _pontos_cape(cape: float) -> float:
-    if cape < 300:
-        return 0.0
-    if cape < 1000:
-        return 10.0
-    if cape < 2500:
-        return 22.0
-    if cape < 3500:
-        return 34.0
-    return 45.0
+    for limite, pontos in FAIXAS_CAPE:
+        if cape >= limite:
+            return pontos
+    return 0.0
 
 
 def _pontos_li(lifted_index: float) -> float:
-    if lifted_index > 2:
-        return 0.0
-    if lifted_index > 0:
-        return 5.0
-    if lifted_index > -2:
-        return 12.0
-    if lifted_index > -6:
-        return 22.0
-    if lifted_index > -9:
-        return 30.0
-    return 35.0
+    for limite, pontos in FAIXAS_LI:
+        if lifted_index > limite:
+            return pontos
+    return PONTOS_LI_MINIMO
 
 
 def _pontos_cin(cin: float) -> float:
     cin_abs = abs(cin)
-    if cin_abs < 25:
-        return 20.0
-    if cin_abs < 50:
-        return 10.0
-    if cin_abs < 100:
-        return 0.0
-    if cin_abs < 200:
-        return -15.0
-    return -30.0
+    for limite, pontos in FAIXAS_CIN:
+        if cin_abs < limite:
+            return pontos
+    return PONTOS_CIN_MAXIMO
 
 
 def detalhar_risco(

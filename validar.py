@@ -757,6 +757,145 @@ def testes_fonte_open_meteo() -> None:
     print("Teste da fonte única (Open-Meteo API, sem seletor de modelo, explicação no fim): OK")
 
 
+def testes_metodo_heuristico() -> None:
+    """Opção de método heurístico (CAPE, LI e CIN): faixas em tabelas, explicação no painel e troca de método na interface."""
+    import os
+    import re
+
+    import numpy as np
+    import streamlit_folium
+    from streamlit.testing.v1 import AppTest
+
+    import analise
+    import app as pdea_app
+    import modelos
+    import risco_raio as rr
+
+    # 1) as tabelas de faixas dão exatamente o mesmo resultado das funções antigas (if encadeados), inclusive nos limites
+    def cape_old(c):
+        return 0.0 if c < 300 else 10.0 if c < 1000 else 22.0 if c < 2500 else 34.0 if c < 3500 else 45.0
+
+    def li_old(x):
+        return 0.0 if x > 2 else 5.0 if x > 0 else 12.0 if x > -2 else 22.0 if x > -6 else 30.0 if x > -9 else 35.0
+
+    def cin_old(c):
+        a = abs(c)
+        return 20.0 if a < 25 else 10.0 if a < 50 else 0.0 if a < 100 else -15.0 if a < 200 else -30.0
+
+    for c in list(np.arange(-300, 5000, 7.5)) + [299.999, 300, 999.999, 1000, 2499.999, 2500, 3499.999, 3500]:
+        assert rr._pontos_cape(c) == cape_old(c), c
+    for x in list(np.arange(-15, 8, 0.05)) + [2, 0, -2, -6, -9, 2.0001, -9.0001]:
+        assert rr._pontos_li(x) == li_old(x), x
+    for c in list(np.arange(-400, 60, 1.5)) + [-25, -50, -100, -200, 25, 50, 100, 200, 0]:
+        assert rr._pontos_cin(c) == cin_old(c), c
+
+    # 2) a explicação do painel é gerada a partir das mesmas tabelas
+    html = pdea_app._html_metodo_heuristico()
+    for limite, pontos in rr.FAIXAS_CAPE + rr.FAIXAS_LI + rr.FAIXAS_CIN:
+        assert f"{limite:g}" in html and f"{pdea_app._pts(pontos)} pts" in html, (limite, pontos)
+    assert f"{pdea_app._pts(rr.PONTOS_LI_MINIMO)} pts" in html and f"{pdea_app._pts(rr.PONTOS_CIN_MAXIMO)} pts" in html
+    assert all(f"{rotulo}:" in html for _, rotulo, _ in rr.NIVEIS_RISCO)
+    ex1, ex2 = pdea_app._exemplos_heuristica()
+    assert "= 54 pontos → Moderado" in ex1 and "42 pontos (Moderado)" in ex2 and "fica em 5 → Nenhum" in ex2
+
+    # 3) dados com contraste entre capitais (CAPE e chuva variam) para os dois métodos terem resultado
+    def dados_variados(com_chuva: bool = True) -> dict:
+        d = _dados_sinteticos()
+        out = {k: v for k, v in d.items() if not isinstance(v, dict)}
+        for i, e in enumerate(ESTACOES):
+            f = (i % 9) / 8
+            serie = dict(d[e["nome"]])
+            serie["cape"] = [4000.0 * f] * len(serie["tempos"])
+            serie["li"] = [-8.0 * f + 2.0] * len(serie["tempos"])
+            if com_chuva:
+                serie["precip"] = [3.0 * f] * len(serie["tempos"])
+            out[e["nome"]] = serie
+        out.update({"_obtido_em": datetime.now(modelos.TZ_BRASILIA).isoformat(), "_extras": com_chuva, "_erro_extras": None if com_chuva else "teste"})
+        return out
+
+    def esperado(dados, metodo):
+        series = analise.series_por_unidade(dados, rr.ParametrosRisco(metodo=metodo), analise.carregar_regioes(), analise.carregar_gate())
+        tab = analise.consolidar(dados, series, 0).dropna(subset=["Score"])
+        topo = tab.sort_values(["Score", "Capital"], ascending=[False, True]).iloc[0]
+        return str(topo["Capital"]), float(topo["Score"]), tab
+
+    original = (modelos.buscar_modelo, streamlit_folium.st_folium)
+    antigo = os.environ.get("PDEA_HISTORICO")
+    mapas: list = []
+    clique = {"valor": None}
+    try:
+        os.environ["PDEA_HISTORICO"] = "desligado"
+
+        def st_folium_falso(mapa, **k):
+            mapas.append(mapa)
+            return {"last_object_clicked_tooltip": clique["valor"]}
+
+        streamlit_folium.st_folium = st_folium_falso
+        import streamlit as st
+
+        st.cache_data.clear()  # o cache de previsão (10 min) é compartilhado: testes anteriores deixaram outros dados nele
+        dados = dados_variados()
+        modelos.buscar_modelo = lambda *a, **k: dados
+        cap_padrao, score_padrao, tab_padrao = esperado(dados, "capexp")
+        cap_heur, score_heur, tab_heur = esperado(dados, "pontos")
+        assert not np.allclose(tab_padrao.set_index("Capital")["Score"].reindex(tab_heur["Capital"]).values, tab_heur["Score"].values)  # os métodos de fato diferem
+
+        at = AppTest.from_file("app.py", default_timeout=90).run()
+        assert not at.exception, [e.value for e in at.exception][:2]
+        radio = at.radio(key="metodo_score")
+        assert list(radio.options) == ["CAPE × chuva (padrão)", "Heurístico: CAPE, LI e CIN"] and radio.value == "CAPE × chuva (padrão)"
+        md = " ".join(str(m.value) for m in at.markdown)
+        assert "<span class='pl'>Método</span><b>CAPE × chuva</b>" in md
+        assert f"<b>{cap_padrao}</b>" in md and f"{score_padrao:.1f}/100" in md      # destaque = maior score do método padrão
+        assert not any("Método heurístico" in str(i.value) for i in at.info)
+        assert any("Método heurístico (CAPE, LI e CIN): como funciona" in str(e.label) for e in at.expander)
+        assert "Open-Meteo API · CAPE × chuva" in mapas[-1].get_root().render()          # legenda do mapa traz o método
+
+        # troca para o heurístico
+        radio.set_value("Heurístico: CAPE, LI e CIN").run()
+        assert not at.exception, [e.value for e in at.exception][:2]
+        md = " ".join(str(m.value) for m in at.markdown)
+        assert "<span class='pl'>Método</span><b>Heurístico (CAPE, LI e CIN)</b>" in md
+        assert f"<b>{cap_heur}</b>" in md and f"{score_heur:.1f}/100" in md             # destaque = maior score do método heurístico
+        assert any("Método heurístico" in str(i.value) for i in at.info)                 # aviso acima do mapa
+        assert "Open-Meteo API · Heurístico (CAPE, LI e CIN)" in mapas[-1].get_root().render()
+        assert at.session_state["metodo_score"] == "Heurístico: CAPE, LI e CIN"
+
+        # janela da capital: a tabela mostra os componentes do método escolhido
+        clique["valor"] = "Fortaleza"
+        at = AppTest.from_file("app.py", default_timeout=90).run()
+        at.radio(key="metodo_score").set_value("Heurístico: CAPE, LI e CIN").run()
+        md = " ".join(str(m.value) for m in at.markdown)
+        assert "Método: Heurístico (CAPE, LI e CIN)" in " ".join(str(c.value) for c in at.caption)
+        assert "<td>Lifted Index</td>" in md and "<td><b>Soma</b></td>" in md and "<td>CAPE × chuva</td>" not in md
+        at.radio(key="metodo_score").set_value("CAPE × chuva (padrão)").run()
+        md = " ".join(str(m.value) for m in at.markdown)
+        assert "<td>CAPE × chuva</td>" in md and "<td><b>Soma</b></td>" not in md
+        clique["valor"] = None
+
+        # sem chuva prevista: o método padrão não calcula (e avisa); o heurístico não depende de chuva e segue funcionando
+        dados = dados_variados(com_chuva=False)
+        modelos.buscar_modelo = lambda *a, **k: dados
+        st.cache_data.clear()
+        at = AppTest.from_file("app.py", default_timeout=90).run()
+        assert any("Sem dados de precipitação" in str(w.value) and "método heurístico" in str(w.value) for w in at.sidebar.warning)
+        assert any("Sem dados de risco" in str(m.value) for m in at.markdown)
+        at.radio(key="metodo_score").set_value("Heurístico: CAPE, LI e CIN").run()
+        assert not at.exception and not any("Sem dados de precipitação" in str(w.value) for w in at.sidebar.warning)
+        md = " ".join(str(m.value) for m in at.markdown)
+        assert "Maior risco em" in md and "Sem dados de risco" not in md
+    finally:
+        modelos.buscar_modelo, streamlit_folium.st_folium = original
+        import streamlit as st
+
+        st.cache_data.clear()
+        if antigo is None:
+            os.environ.pop("PDEA_HISTORICO", None)
+        else:
+            os.environ["PDEA_HISTORICO"] = antigo
+    print("Testes do método heurístico (faixas idênticas, explicação gerada do código, troca de método, sem chuva): OK")
+
+
 def testes_ampliados() -> None:
     # Heurística ampliada: pontos limitados, sem efeito com peso 0 ou sem dados extras.
     assert ajuste_extras(None) == 0 and ajuste_extras({}) == 0
@@ -980,6 +1119,7 @@ if __name__ == "__main__":
     testes_mapa_estavel()
     testes_concorrencia()
     testes_fonte_open_meteo()
+    testes_metodo_heuristico()
     testes_ampliados()
     if "--online" in sys.argv:
         from modelos import ErroBuscaModelo

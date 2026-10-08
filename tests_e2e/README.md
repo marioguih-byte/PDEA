@@ -4,7 +4,8 @@ Abre o painel em um Chromium de verdade (sem tela), com previsão e raios **simu
 - as quatro cores de raios (vermelho, laranja, amarelo e verde) têm contagem maior que zero;
 - clicar na bolinha de uma capital **abre o painel de detalhes**;
 - o painel **não fecha sozinho** durante as atualizações do canal dos raios (65 s, duas rodadas);
-- o botão *Fechar* fecha, e outra capital abre.
+- o botão *Fechar* fecha, e outra capital abre;
+- trocar para o **método heurístico** muda o cartão *Método* do cabeçalho e mostra o aviso, o painel da capital passa a mostrar a tabela de pontos (CAPE, LI e CIN, com a soma), e voltar ao método padrão restaura tudo.
 
 ```bash
 cd tests_e2e && npm install @sparticuz/chromium puppeteer-core leaflet@1.9.4 jquery && cd ..
