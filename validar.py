@@ -255,7 +255,10 @@ def testes_glm_ao_vivo() -> None:
         for k in range(1, 16):
             arquivos[chave(agora + timedelta(seconds=20 * k))] = nc_bytes(pasta, [-8.0], [-35.0])
         d2 = a.atualizar(agora + timedelta(minutes=5))
-        assert len(cli.baixados) - antes == 15 and cli.baixados.count(ruim) == 1  # incremental; o arquivo ruim não é refeito
+        assert len(cli.baixados) - antes == 16 and cli.baixados.count(ruim) == 2  # incremental: 15 novos + 1 nova tentativa do arquivo ruim
+        for k in (6, 7, 8):  # o arquivo ruim é tentado no máximo TENTATIVAS_ARQUIVO vezes e depois deixa de ser baixado
+            a.atualizar(agora + timedelta(minutes=k))
+        assert cli.baixados.count(ruim) == g.TENTATIVAS_ARQUIVO == 3
         assert any(r[0] == -8.0 for r in d2["raios"]) and max(r[2] for r in d2["raios"]) <= 30 * 60 + 20
         a.gravar(d2)
         import json as _json
@@ -364,9 +367,8 @@ def testes_mapa_alcance() -> None:
         blocos = [b for b in re.findall(r"L\.circle\(.*?\)\.addTo", h, flags=re.S) if re.search(r'"radius": %d\b' % (km * 1000), b)]
         assert len(blocos) == len(ESTACOES) and all(f'"color": "{cor}"' in b and '"interactive": false' in b and '"weight": 4' in b and '"dashArray": "12 8"' in b for b in blocos), km
     assert all(x in h for x in ("Alcance ao redor da capital", "30 km", "50 km", "100 km"))
-    # os anéis ficam em um painel ACIMA das bolinhas das capitais (senão o de 30 km some embaixo delas) e só aparecem com zoom suficiente
-    assert len(re.findall(r'"pane": "aneis"', h)) == 3 * len(ESTACOES) and ".createPane('aneis')" in h and "zIndex = 620" in h
-    assert f"var ZMIN = {pdea_app.ZOOM_MIN_ALCANCE}" in h and "zoom a partir de 6" in h and pdea_app.ZOOM_MIN_ALCANCE == 6
+    # os anéis aparecem em qualquer zoom, como antes: sem painel próprio, sem zoom mínimo e sem aviso de "aproxime"
+    assert "createPane" not in h and "ZMIN" not in h and "zoom a partir" not in h and '"pane"' not in "".join(re.findall(r"L\.circle\(.*?\)\.addTo", h, flags=re.S))
     assert "L.circle(" not in mapa(False) and "Alcance ao redor da capital" not in mapa(False)
     print("Testes do alcance de 30, 50 e 100 km (verde, amarelo, vermelho; grossos e tracejados): OK")
 
@@ -428,6 +430,78 @@ def testes_manter_acordado() -> None:
     flux = (Path(__file__).resolve().parent / ".github" / "workflows" / "manter_app_acordado.yml").read_text(encoding="utf-8")
     assert 'cron: "17 */6 * * *"' in flux and "vars.APP_URL" in flux and "playwright install" in flux
     print("Teste da visita que mantém o app acordado (acorda, espera carregar, falha sem carregar, exige APP_URL): OK")
+
+
+def testes_canal_e_rolagem() -> None:
+    """Canal da página (entrega os raios ao mapa sem depender do arquivo), limpeza de arquivos velhos e barra de rolagem."""
+    import json as _json
+    import os
+    import re as _re
+    import time as _time
+
+    import glm_ao_vivo as g
+    import modelos
+    from datetime import datetime as _dt
+    from streamlit.testing.v1 import AppTest
+
+    # 1) coletor: arquivos velhos são apagados ao ligar; a espera é alinhada ao relógio, com reforço quando a janela está incompleta
+    with tempfile.TemporaryDirectory() as p:
+        pasta = Path(p) / "static"
+        pasta.mkdir()
+        for nome in ("glm_flashes.txt", "glm_meta.txt"):
+            (pasta / nome).write_text('{"gerado":1,"janela_min":30,"raios":[]}', encoding="utf-8")
+        a = g.AtualizadorGLM(caminho=pasta / "glm_flashes.txt", cliente=object())
+        a.limpar_arquivos_antigos()
+        assert not list(pasta.glob("glm_*.txt"))  # resto de execução antiga (por exemplo, enviado por engano ao GitHub) não é servido
+        (pasta / "glm_flashes.txt").write_text(_json.dumps({"gerado": int(_time.time()) - 3600, "raios": []}), encoding="utf-8")
+        g._UNICO = a
+        assert g.dados_atuais() is None  # arquivo de 1 h atrás não vale como "atual"
+        (pasta / "glm_flashes.txt").write_text(_json.dumps({"gerado": int(_time.time()) - 60, "janela_min": 20, "raios": []}), encoding="utf-8")
+        assert g.dados_atuais()["janela_min"] == 20
+        b = g.AtualizadorGLM(caminho=pasta / "x.txt", cliente=object())
+        assert 5 <= b.espera_s(1000.0) <= 320 and abs(b.espera_s(1000.0) - (300 - 1000 % 300 + 20)) < 1e-9  # alinhada: minutos 0, 5, 10... + 20 s
+        b.ultimo = {"arquivos": 10}  # janela incompleta (10 de 60 arquivos): reforço em 30 s, no máximo 6 vezes
+        assert [b.espera_s(1000.0) for _ in range(6)] == [30.0] * 6 and b.espera_s(1000.0) != 30.0
+        b.ultimo = {"arquivos": 60}
+        assert b.espera_s(1000.0) != 30.0
+
+    # 2) canal: o HTML entrega os dados em window.top.__pdeaGlm, com a hora do servidor e sem poder quebrar o <script>
+    import app as pdea_app
+
+    dados = {"versao": g.VERSAO_GLM, "gerado": 1000, "janela_min": 20, "ultimo_arquivo": 990, "arquivos": 60,
+             "raios": [[-3.7, -38.5, i % 1200] for i in range(30000)]}
+    html = pdea_app._html_canal_glm(dados, erro="x</script><b>")
+    assert html.startswith("<script>") and html.endswith("</script>") and html.count("</script>") == 1 and "w.__pdeaGlm=" in html
+    carga = _json.loads(html.split("w.__pdeaGlm=", 1)[1].rsplit(";})();", 1)[0].replace("<\\/", "</"))
+    assert carga["gerado"] == 1000 and carga["versao"] == g.VERSAO_GLM and carga["erro"] is True and abs(carga["agora"] - _time.time()) < 5
+    assert len(carga["raios"]) <= 15000 and {r[2] // 300 for r in carga["raios"]} == {0, 1, 2, 3}  # limitado, com as 4 cores
+    assert _json.loads(html.split("w.__pdeaGlm=", 1)[1].rsplit(";})();", 1)[0])["erro"] is True
+
+    # 3) o painel abre com o canal ligado (fragmento) e traz a barra de rolagem mais grossa
+    class Coletor:
+        ultimo = {"versao": g.VERSAO_GLM, "gerado": int(_time.time()), "janela_min": 20, "ultimo_arquivo": int(_time.time()) - 60,
+                  "arquivos": 60, "raios": [[-3.7, -38.5, 60], [-23.5, -46.6, 1000]]}
+        ultimo_erro = None
+
+    original = (g.obter_atualizador, g.dados_atuais, modelos.buscar_modelo)
+    antigo = os.environ.get("PDEA_HISTORICO")
+    try:
+        os.environ["PDEA_HISTORICO"] = "desligado"
+        g.obter_atualizador = lambda iniciar=True: Coletor()
+        g.dados_atuais = lambda aguardar_s=0.0: Coletor.ultimo
+        modelos.buscar_modelo = lambda *a, **k: {**_dados_sinteticos(), "_obtido_em": _dt.now(modelos.TZ_BRASILIA).isoformat(), "_extras": False, "_erro_extras": "teste"}
+        at = AppTest.from_file("app.py", default_timeout=90).run()
+        assert not at.exception, [e.value for e in at.exception][:2]
+        assert at.session_state["glm_enviado"] == Coletor.ultimo["gerado"]  # o fragmento do canal rodou e entregou a coleta
+        css = " ".join(str(m.value) for m in at.markdown)
+        assert "scrollbar-width: auto !important" in css and "::-webkit-scrollbar { width: 16px" in css and "-moz-appearance" in css
+    finally:
+        g.obter_atualizador, g.dados_atuais, modelos.buscar_modelo = original
+        if antigo is None:
+            os.environ.pop("PDEA_HISTORICO", None)
+        else:
+            os.environ["PDEA_HISTORICO"] = antigo
+    print("Testes do canal da página, da limpeza de arquivos velhos e da barra de rolagem: OK")
 
 
 def testes_ampliados() -> None:
@@ -647,6 +721,7 @@ if __name__ == "__main__":
     testes_sem_cadastro()
     testes_mapa_alcance()
     testes_manter_acordado()
+    testes_canal_e_rolagem()
     testes_ampliados()
     if "--online" in sys.argv:
         from modelos import ErroBuscaModelo

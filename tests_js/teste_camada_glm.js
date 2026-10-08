@@ -1,7 +1,8 @@
 const http = require("http"), fs = require("fs"), { JSDOM } = require("jsdom");
 let estadoArquivo = null;           // conteúdo servido em /app/static/glm_flashes.txt (null = 404)
-let contagem = 0, contagemMeta = 0;
+let contagem = 0, contagemMeta = 0, urlsVistas = [];
 const srv = http.createServer((req, res) => {
+  urlsVistas.push(req.url);
   if (req.url.startsWith("/app/static/glm_meta.txt") && estadoArquivo !== null) {
     contagemMeta++; let g = null; try { g = JSON.parse(estadoArquivo).gerado; } catch (e) {}
     if (g === null) { res.writeHead(404); res.end("x"); } else { res.writeHead(200, {"Content-Type": "text/plain"}); res.end(JSON.stringify({gerado: g})); }
@@ -42,6 +43,18 @@ const dorme = (ms) => new Promise(r => setTimeout(r, ms));
   ok(JSON.stringify(lido) === JSON.stringify(esperado) && lido.every(n => n > 0), "contagem por cor: " + lido + " esperado " + esperado);
   const n1 = contagem;
 
+  // 2b) o cartão mostra a hora da coleta e todas as consultas levam parâmetro anti-cache
+  ok(/coleta \d\d:\d\d/.test(chip()), "cartão sem a hora da coleta: " + chip());
+  ok(urlsVistas.filter(u => u.startsWith("/app/static/glm_")).every(u => /[?&]_=\d+/.test(u)), "consultas sem anti-cache: " + urlsVistas.slice(0, 4));
+
+  // 2c) dado MAIS VELHO (arquivo antigo/em cache) nunca sobrescreve um dado recente
+  const antes120 = cont();
+  estadoArquivo = JSON.stringify({gerado: agora + 100, janela_min: 30, ultimo_arquivo: agora, arquivos: 10, raios: [[-5, -40, 10], [-6, -41, 20]]});
+  await dorme(1200);
+  ok(cont() === antes120, "arquivo velho sobrescreveu o dado novo: " + cont());
+  estadoArquivo = JSON.stringify({gerado: agora + 300, janela_min: 20, ultimo_arquivo: agora + 280, arquivos: 90,
+    raios: Array.from({length: 120}, (_, i) => [-10 + i * 0.05, -45, 30 + (i % 19) * 60])});  // volta ao arquivo bom (mesmo gerado)
+
   // 3) arquivo igual: não redesenha e NÃO baixa o arquivo grande de novo (só consulta o meta)
   const m0 = contagemMeta;
   await dorme(1500);
@@ -58,6 +71,21 @@ const dorme = (ms) => new Promise(r => setTimeout(r, ms));
   estadoArquivo = JSON.stringify({gerado: agora + 600, janela_min: 20, ultimo_arquivo: agora + 580, arquivos: 90, raios: []});
   await dorme(1000);
   ok(cont() === 0 && /\b0 nos/.test(chip()), "esvaziar: " + cont() + " / " + chip());
+  // 2d) canal da página (window.top.__pdeaGlm): dado novo entregue pelo Streamlit, sem nenhum arquivo estático
+  estadoArquivo = null;   // o servidor passa a responder 404 (como se o arquivo estático não funcionasse)
+  w.__pdeaGlm = {versao: "teste", gerado: agora + 900, janela_min: 20, ultimo_arquivo: agora + 880, arquivos: 60, agora: agora + 960,
+                 raios: [[-1, -50, 10], [-2, -51, 400], [-3, -52, 700], [-4, -53, 1000], [-5, -54, 1130]]};
+  await dorme(1200);
+  ok(cont() === 5, "o canal deveria entregar 5 raios, veio " + cont());
+  ok(/5 nos/.test(chip()) && /coleta/.test(chip()), "cartão após o canal: " + chip());
+  ok(w.document.querySelector(".pdea-glm-chip").title.includes("teste"), "tooltip com a versão do coletor");
+  // a hora do servidor no envio corrige as idades: gerado = +900, agora = +960 => cada raio chega 60 s mais velho
+  const coresCanal = Object.values(mapa._layers).filter(l => l instanceof w.L.CircleMarker).map(l => l.options.fillColor).sort();
+  ok(JSON.stringify(coresCanal) === JSON.stringify(["#e11d1d", "#ff8a00", "#ffe000", "#2ecc40", "#2ecc40"].sort()), "cores com a correção de 60 s: " + coresCanal);
+  w.__pdeaGlm = {...w.__pdeaGlm, gerado: agora + 100};   // canal com dado velho: ignorado
+  await dorme(800);
+  ok(cont() === 5, "canal velho não pode sobrescrever");
+
   console.log("JS da camada GLM (Leaflet real em jsdom): OK  | arquivo grande:", contagem, "| meta:", contagemMeta);
   srv.close(); process.exit(0);
 })();

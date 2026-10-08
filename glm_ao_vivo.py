@@ -35,7 +35,10 @@ from typing import Any, Optional
 import numpy as np
 
 BUCKET = os.environ.get("PDEA_GLM_BUCKET", "noaa-goes19")  # GOES-East desde 07/04/2025
+VERSAO_GLM = "2026-10-08f"  # aparece no texto de ajuda do cartão do mapa (ajuda a ver qual coletor está rodando)
 JANELA_MIN = 20
+TENTATIVAS_ARQUIVO = 3  # um arquivo que falha é tentado de novo nas rodadas seguintes, até este número de vezes
+IDADE_MAX_ARQUIVO_S = 900  # ao ligar, um arquivo de dados mais velho que isto é considerado resto de execução antiga e descartado
 INTERVALO_S = 300
 MAX_RAIOS = 24000
 FAIXA_S = 300  # faixas de idade de 5 min (vermelho, laranja, amarelo, verde)
@@ -134,7 +137,9 @@ class AtualizadorGLM:
         self.bucket, self.trabalhadores = bucket, trabalhadores
         self._cliente = cliente
         self._por_arquivo: dict[str, tuple[datetime, np.ndarray]] = {}
-        self._falhas: set[str] = set()
+        self._falhas: dict[str, int] = {}
+        self._rapidas = 0  # rodadas extras de reforço logo depois de ligar
+        self._limpou = False
         self._lock = threading.Lock()
         self.ultimo: Optional[dict[str, Any]] = None
         self.ultimo_erro: Optional[str] = None
@@ -163,7 +168,7 @@ class AtualizadorGLM:
         for h in sorted(horas):
             for chave in listar_hora(self._cli(), h, self.bucket):
                 t = inicio_do_arquivo(chave)
-                if t is not None and t >= corte and chave not in self._por_arquivo and chave not in self._falhas:
+                if t is not None and t >= corte and chave not in self._por_arquivo and self._falhas.get(chave, 0) < TENTATIVAS_ARQUIVO:
                     candidatos.append((t, chave))
         if candidatos:
             # Download em paralelo (só rede). A leitura NetCDF/HDF5 é feita um arquivo por vez: a biblioteca não é
@@ -174,19 +179,20 @@ class AtualizadorGLM:
             with self._lock:
                 for (t, chave), arr in zip(candidatos, resultados):
                     if arr is None:
-                        self._falhas.add(chave)  # não tenta de novo um arquivo que falhou (evita laço de erro)
+                        self._falhas[chave] = self._falhas.get(chave, 0) + 1  # tenta de novo na próxima rodada, até TENTATIVAS_ARQUIVO
                     else:
                         self._por_arquivo[chave] = (t, arr)
+                        self._falhas.pop(chave, None)
         with self._lock:
             self._por_arquivo = {k: v for k, v in self._por_arquivo.items() if v[0] >= corte}
-            self._falhas = {k for k in self._falhas if (inicio_do_arquivo(k) or agora) >= corte}
+            self._falhas = {k: n for k, n in self._falhas.items() if (inicio_do_arquivo(k) or agora) >= corte}
             pares = sorted(self._por_arquivo.values(), key=lambda p: p[0])
         raios: list[list] = []
         for t, arr in pares:
             idade = int((agora - t).total_seconds())
             raios += [[round(float(la), 2), round(float(lo), 2), idade] for la, lo in arr]
         raios = amostrar_por_faixa(compactar(raios), MAX_RAIOS)  # sem cortar só os antigos: todas as cores seguem presentes
-        dados = {"gerado": int(agora.timestamp()), "janela_min": self.janela_min,
+        dados = {"versao": VERSAO_GLM, "gerado": int(agora.timestamp()), "janela_min": self.janela_min,
                  "ultimo_arquivo": int(pares[-1][0].timestamp()) if pares else None, "arquivos": len(pares), "raios": raios}
         self.ultimo = dados
         return dados
@@ -230,15 +236,39 @@ class AtualizadorGLM:
         finally:
             self.primeira.set()
 
+    def limpar_arquivos_antigos(self) -> None:
+        """Ao ligar, apaga os arquivos de dados que sobraram de execuções antigas (inclusive os enviados por engano ao GitHub).
+
+        Eles seriam servidos como se fossem atuais, com dados velhos e uma janela diferente. A pasta static/ só deve conter o que
+        ESTE processo gerou.
+        """
+        if self._limpou:
+            return
+        self._limpou = True
+        for nome in (self.caminho.name, "glm_meta.txt", self.caminho.stem + ".tmp", "glm_meta.tmp"):
+            try:
+                (self.caminho.parent / nome).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def espera_s(self, agora_ts: Optional[float] = None) -> float:
+        """Segundos até a próxima rodada: alinhada ao relógio (minutos 0, 5, 10... mais 20 s) ou, logo depois de ligar com a janela
+        incompleta, um reforço em 30 s para preencher o que faltou."""
+        agora_ts = time.time() if agora_ts is None else agora_ts
+        esperados = self.janela_min * 60 / 20  # um arquivo a cada 20 s
+        if self.ultimo is not None and self.ultimo["arquivos"] < 0.8 * esperados and self._rapidas < 6:
+            self._rapidas += 1
+            return 30.0
+        return max(self.intervalo_s - (agora_ts % self.intervalo_s) + 20, 5.0)
+
     def _laco(self) -> None:
         while True:
             self.rodada()
-            # alinha ao relógio: roda nos minutos 0, 5, 10... (mais 20 s, para o último arquivo do período já estar no S3)
-            espera = self.intervalo_s - (time.time() % self.intervalo_s) + 20
-            time.sleep(max(espera, 5))
+            time.sleep(self.espera_s())
 
     def iniciar(self) -> "AtualizadorGLM":
         if self._thread is None or not self._thread.is_alive():
+            self.limpar_arquivos_antigos()
             self._thread = threading.Thread(target=self._laco, name="pdea-glm", daemon=True)
             self._thread.start()
         return self
@@ -271,6 +301,7 @@ def dados_atuais(aguardar_s: float = 0.0) -> Optional[dict[str, Any]]:
     if a.ultimo:
         return a.ultimo
     try:
-        return json.loads(a.caminho.read_text(encoding="utf-8"))
+        d = json.loads(a.caminho.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    return d if time.time() - d.get("gerado", 0) <= IDADE_MAX_ARQUIVO_S else None  # arquivo velho não vale como "atual"

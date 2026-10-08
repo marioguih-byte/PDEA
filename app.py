@@ -21,17 +21,16 @@ import altair as alt
 import folium
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from branca.element import Element, MacroElement
 from jinja2 import Template
 from streamlit_folium import st_folium
 
 
 # Carimbo de versão: fica no texto de ajuda (passar o mouse) dos créditos da barra lateral, para conferir qual cópia está no ar.
-# Os anéis só aparecem a partir deste zoom: abaixo dele o anel de 30 km mede menos que a bolinha da capital e viraria uma mancha.
-ZOOM_MIN_ALCANCE = 6
 # Alcance ao redor das capitais (km, cor): os mesmos raios usados na verificação contra o GLM. Linhas grossas e tracejadas.
 ALCANCES_KM = ((30, "#2ecc40"), (50, "#ffd400"), (100, "#e11d1d"))  # verde, amarelo, vermelho
-VERSAO_APP = "2026-10-08e"  # aparece só ao passar o mouse nos créditos da barra lateral
+VERSAO_APP = "2026-10-08f"  # aparece só ao passar o mouse nos créditos da barra lateral
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -225,48 +224,8 @@ def carregar_geojson(arquivo: str) -> dict[str, Any]:
     return json.loads((RAIZ / "dados" / arquivo).read_text(encoding="utf-8"))
 
 
-class AneisAlcance(MacroElement):
-    """Anéis de alcance acima das bolinhas das capitais e visíveis só a partir de ``zoom_min``.
-
-    Fase "painel": cria o painel 'aneis' (acima dos marcadores, sem capturar o mouse). Deve ser adicionada ANTES do grupo de
-    círculos, para o painel existir quando os círculos forem criados. Fase "zoom": liga/desliga o grupo conforme o zoom.
-    """
-
-    _template = Template(
-        """
-        {% macro script(this, kwargs) %}
-        (function () {
-            var mapa = {{ this._parent.get_name() }};
-            {% if this.fase == "painel" %}
-            mapa.createPane('aneis');
-            var painel = mapa.getPane('aneis');
-            painel.style.zIndex = 620;            // acima dos marcadores (600) e abaixo dos tooltips (650)
-            painel.style.pointerEvents = 'none';  // não captura cliques nem o mouse
-            {% else %}
-            var grupo = {{ this.grupo }};
-            var ZMIN = {{ this.zoom_min }};
-            function atualizar() {
-                var visivel = mapa.getZoom() >= ZMIN;
-                if (visivel && !mapa.hasLayer(grupo)) { mapa.addLayer(grupo); }
-                if (!visivel && mapa.hasLayer(grupo)) { mapa.removeLayer(grupo); }
-            }
-            mapa.on('zoomend', atualizar);
-            mapa.whenReady(atualizar);
-            {% endif %}
-        })();
-        {% endmacro %}
-        """
-    )
-
-    def __init__(self, fase: str, grupo: str = "", zoom_min: float = ZOOM_MIN_ALCANCE) -> None:
-        super().__init__()
-        self._name = "AneisAlcance"
-        self.fase, self.grupo, self.zoom_min = fase, grupo, zoom_min
-
-
 def adicionar_alcance(mapa: folium.Map, tabela: pd.DataFrame) -> None:
-    """Anéis de 30, 50 e 100 km (verde, amarelo e vermelho; grossos e tracejados) ao redor de cada capital."""
-    mapa.add_child(AneisAlcance("painel"))
+    """Anéis de 30, 50 e 100 km (verde, amarelo e vermelho; grossos e tracejados) ao redor de cada capital, em qualquer zoom."""
     grupo = folium.FeatureGroup(name="Alcance (30, 50 e 100 km)", control=False)
     for _, linha in tabela.iterrows():
         for km, cor_anel in reversed(ALCANCES_KM):  # do maior para o menor: o anel de 30 km fica por cima
@@ -274,18 +233,19 @@ def adicionar_alcance(mapa: folium.Map, tabela: pd.DataFrame) -> None:
                 location=[linha["Latitude"], linha["Longitude"]], radius=km * 1000, color=cor_anel, weight=4,
                 opacity=0.95, dash_array="12 8", fill=True, fill_color=cor_anel, fill_opacity=0.04,
             )
-            anel.options["interactive"] = False  # o folium descarta esses dois argumentos no construtor
-            anel.options["pane"] = "aneis"
+            anel.options["interactive"] = False  # o folium descarta esse argumento no construtor; sem isso o anel captura o mouse
             anel.add_to(grupo)
     grupo.add_to(mapa)
-    mapa.add_child(AneisAlcance("zoom", grupo=grupo.get_name()))
 
 
 class RaiosGLM(MacroElement):
-    """Camada de raios do GLM que se atualiza sozinha no navegador, sem acionar o Streamlit.
+    """Camada de raios do GLM que se atualiza sozinha no navegador, sem recarregar o mapa nem a página.
 
-    O servidor grava ``static/glm_flashes.txt`` a cada 5 min (``glm_ao_vivo.py``). Este script busca o arquivo e redesenha
-    só a camada de raios. O instantâneo ``inicial`` (embutido no mapa) cobre o primeiro desenho.
+    Há duas fontes de dados, e vale sempre a MAIS NOVA (um arquivo velho ou em cache nunca sobrescreve um dado recente):
+      1. Canal da página: um fragmento do Streamlit (``canal_glm``) entrega a coleta mais recente do servidor em
+         ``window.top.__pdeaGlm`` a cada 5 min. Não depende do arquivo estático nem de gravação em disco.
+      2. Arquivo ``static/glm_flashes.txt`` (consulta o ``glm_meta.txt`` a cada 30 s, com parâmetro anti-cache).
+    O instantâneo ``inicial`` (embutido no mapa) cobre o primeiro desenho.
     """
 
     _template = Template(
@@ -297,12 +257,19 @@ class RaiosGLM(MacroElement):
                 var o = window.origin;
                 return (o && o !== 'null') ? o : '';
             }
+            function topo() {   // a janela mais alta que este mapa consegue acessar (o mapa roda dentro de iframes)
+                var w = window;
+                try { while (w.parent && w.parent !== w) { void w.parent.document; w = w.parent; } } catch (e) {}
+                return w;
+            }
+            function bust(u) { return u + (u.indexOf('?') < 0 ? '?' : '&') + '_=' + Date.now(); }
             var URLS = {{ this.urls }}.map(function (u) { return origem() + u; });
             var JANELA_S = {{ this.janela_s }};
             var INTERVALO_MS = {{ this.intervalo_ms }};
+            var CANAL_MS = {{ this.canal_ms }};
             var inicial = {{ this.inicial }};
             var grupo = L.layerGroup().addTo(mapa);
-            var estado = {gerado: null, recebido: 0, dados: null, url: null};
+            var estado = {gerado: null, recebido: 0, desloc: 0, dados: null, url: null};
 
             var chip = L.control({position: 'topright'});
             chip.onAdd = function () {
@@ -319,7 +286,7 @@ class RaiosGLM(MacroElement):
                 } catch (e) { return ''; }
             }
             function agoraServidor() {
-                return estado.gerado + (performance.now() - estado.recebido) / 1000;
+                return estado.gerado + estado.desloc + (performance.now() - estado.recebido) / 1000;
             }
             function estilo(idadeS) {
                 var m = idadeS / 60;
@@ -335,7 +302,9 @@ class RaiosGLM(MacroElement):
                 var ult = d.ultimo_arquivo ? d.ultimo_arquivo * 1000 : null;
                 var atraso = ult ? Math.round((agoraServidor() * 1000 - ult) / 60000) : null;
                 var obs = ult ? ('dados at&eacute; ' + hora(ult) + ' (h&aacute; ' + atraso + ' min)') : 'sem arquivos recentes';
+                obs += ' &middot; coleta ' + hora(d.gerado * 1000);
                 var aviso = (atraso !== null && atraso > 15) ? ' &middot; <span class="g-aviso">atrasado</span>' : '';
+                if (d.erro) { aviso += ' &middot; <span class="g-aviso">falha na coleta, tentando de novo</span>'; }
                 var cores = ['#e11d1d', '#ff8a00', '#ffe000', '#2ecc40'], rot = ['at&eacute; 5 min', '5 a 10 min', '10 a 15 min', '15 a 20 min'];
                 var linha = '';
                 if (cls) {
@@ -344,8 +313,9 @@ class RaiosGLM(MacroElement):
                                  cls[c] + '</span></span> ';
                     }
                 }
+                el.title = 'Coletor ' + (d.versao || 'antigo') + ' · janela ' + d.janela_min + ' min · ' + (d.arquivos || 0) + ' arquivos do GLM';
                 el.innerHTML = '<b>&#9889; Raios GLM</b> &middot; ' + n.toLocaleString('pt-BR') + ' nos &uacute;ltimos ' +
-                    Math.round(d.janela_min) + ' min<br><span class="g-linha">' + linha + '</span><br><span class="g-n">' + obs + aviso + '</span>';
+                    Math.round(JANELA_S / 60) + ' min<br><span class="g-linha">' + linha + '</span><br><span class="g-n">' + obs + aviso + '</span>';
             }
             function desenhar() {
                 var d = estado.dados;
@@ -373,14 +343,19 @@ class RaiosGLM(MacroElement):
             }
             function aplicar(d) {
                 if (!d || !d.raios) { return; }
-                if (estado.gerado !== null && d.gerado === estado.gerado) { return; }  // nada novo
+                if (estado.gerado !== null && d.gerado <= estado.gerado) { return; }  // só aceita dado MAIS NOVO
                 estado.dados = d; estado.gerado = d.gerado; estado.recebido = performance.now();
+                // se o dado traz a hora do servidor no envio, as idades ficam corretas mesmo que ele tenha chegado alguns segundos depois
+                estado.desloc = (typeof d.agora === 'number' && d.agora >= d.gerado && d.agora - d.gerado < 900) ? d.agora - d.gerado : 0;
                 desenhar();
+            }
+            function lerCanal() {
+                try { var d = topo().__pdeaGlm; if (d && d.raios) { aplicar(d); } } catch (e) {}
             }
             function tentar(ordem, i) {
                 if (i >= ordem.length) { return Promise.reject(new Error('sem arquivo')); }
                 var url = ordem[i];
-                return fetch(url, {cache: 'no-cache'}).then(function (r) {
+                return fetch(bust(url), {cache: 'no-store'}).then(function (r) {
                     if (!r.ok) { throw new Error('http ' + r.status); }
                     return r.text();
                 }).then(function (txt) {
@@ -393,28 +368,35 @@ class RaiosGLM(MacroElement):
                 });
             }
             function meta(url) {
-                return fetch(url.replace('glm_flashes.txt', 'glm_meta.txt'), {cache: 'no-cache'}).then(function (r) {
+                return fetch(bust(url.replace('glm_flashes.txt', 'glm_meta.txt')), {cache: 'no-store'}).then(function (r) {
                     if (!r.ok) { throw new Error('http ' + r.status); }
                     return r.text();
                 }).then(function (txt) { return JSON.parse(txt); });
             }
             function buscar() {
-                // começa pelo endereço que funcionou da última vez; se falhar, testa os demais
-                var ordem = estado.url ? [estado.url].concat(URLS.filter(function (u) { return u !== estado.url; })) : URLS;
-                var passo = estado.url
-                    ? meta(estado.url).then(function (m) {
-                        return (m && m.gerado === estado.gerado) ? null : tentar(ordem, 0);  // só baixa o arquivo grande se mudou
-                    }).catch(function () { return tentar(ordem, 0); })
-                    : tentar(ordem, 0);
-                passo.then(function (d) { if (d) { aplicar(d); } }).catch(function () {
+                try {   // qualquer falha aqui (sem fetch, rede fora...) não pode impedir o canal da página nem os temporizadores
+                    // começa pelo endereço que funcionou da última vez; se falhar, testa os demais
+                    var ordem = estado.url ? [estado.url].concat(URLS.filter(function (u) { return u !== estado.url; })) : URLS;
+                    var passo = estado.url
+                        ? meta(estado.url).then(function (m) {
+                            return (m && m.gerado <= estado.gerado) ? null : tentar(ordem, 0);  // só baixa o arquivo grande se há dado mais novo
+                        }).catch(function () { return tentar(ordem, 0); })
+                        : tentar(ordem, 0);
+                    passo.then(function (d) { if (d) { aplicar(d); } }).catch(function () {
+                        estado.url = null;
+                        if (!estado.dados) { texto(0, null); }
+                    });
+                } catch (e) {
                     estado.url = null;
                     if (!estado.dados) { texto(0, null); }
-                });
+                }
             }
 
             if (inicial && inicial.raios) { aplicar(inicial); }
+            lerCanal();
             buscar();
-            setInterval(buscar, INTERVALO_MS);       // consulta o arquivo de metadados (poucos bytes); só baixa e redesenha se mudou
+            setInterval(lerCanal, CANAL_MS);         // canal da página (memória do navegador): barato, a cada poucos segundos
+            setInterval(buscar, INTERVALO_MS);       // arquivo estático: consulta o meta (poucos bytes); só baixa e redesenha se há dado mais novo
             setInterval(desenhar, 30000);            // as cores acompanham a idade dos raios (e os de mais de 20 min somem)
             var tentativas = 0;
             var rapido = setInterval(function () {   // servidor recém-ligado: tenta a cada 5 s até a 1ª coleta terminar
@@ -426,7 +408,8 @@ class RaiosGLM(MacroElement):
         """
     )
 
-    def __init__(self, inicial: Optional[dict], caminho_base: str = "", janela_s: int = 1200, intervalo_ms: int = 30000) -> None:
+    def __init__(self, inicial: Optional[dict], caminho_base: str = "", janela_s: int = 1200, intervalo_ms: int = 30000,
+                 canal_ms: int = 5000) -> None:
         super().__init__()
         self._name = "RaiosGLM"
         base = (caminho_base or "").rstrip("/")
@@ -435,13 +418,40 @@ class RaiosGLM(MacroElement):
         self.urls = json.dumps([f"{base}/{arq}", f"/~/+/{arq}"])
         self.janela_s = int(janela_s)
         self.intervalo_ms = int(intervalo_ms)
+        self.canal_ms = int(canal_ms)
         if inicial and inicial.get("raios"):
             # Só o necessário ao 1º desenho, com a mesma cota por faixa de idade: o amarelo e o verde (mais antigos) não ficam de fora.
             raios_ini = glm_ao_vivo.amostrar_por_faixa(inicial["raios"], 6000) if glm_ao_vivo else sorted(inicial["raios"], key=lambda r: r[2])[:6000]
-            recorte = {**inicial, "raios": raios_ini}
+            recorte = {**inicial, "raios": raios_ini, "agora": int(time.time())}
             self.inicial = json.dumps(recorte, separators=(",", ":"))
         else:
             self.inicial = "null"
+
+
+def _html_canal_glm(dados: dict, erro: Optional[str] = None) -> str:
+    """HTML (só um script) que deixa a coleta mais recente em ``window.top.__pdeaGlm`` para os mapas lerem."""
+    raios = glm_ao_vivo.amostrar_por_faixa(dados["raios"], 15000) if glm_ao_vivo else dados["raios"]
+    carga = {**dados, "raios": raios, "agora": int(time.time()), "erro": bool(erro)}
+    js = json.dumps(carga, separators=(",", ":")).replace("</", "<\\/")
+    return ("<script>(function(){var w=window;try{while(w.parent&&w.parent!==w){void w.parent.document;w=w.parent;}}catch(e){}"
+            "w.__pdeaGlm=" + js + ";})();</script>")
+
+
+@st.fragment(run_every=30)
+def canal_glm() -> None:
+    """Entrega ao navegador, a cada coleta nova (de 5 em 5 min), os raios do servidor: não depende do arquivo estático.
+
+    Só o fragmento é reexecutado (a cada 30 s); o mapa e o resto da página não são recarregados. Também reinicia a coleta se a
+    thread tiver morrido.
+    """
+    if glm_ao_vivo is None:
+        return
+    coletor = glm_ao_vivo.obter_atualizador(iniciar=True)
+    dados = coletor.ultimo
+    if not dados or st.session_state.get("glm_enviado") == dados.get("gerado"):
+        return
+    st.session_state["glm_enviado"] = dados["gerado"]
+    components.html(_html_canal_glm(dados, coletor.ultimo_erro), height=0)
 
 
 class AjusteBrasil(MacroElement):
@@ -531,7 +541,7 @@ def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: boo
     if goes:
         itens += "<div class='rl-sub' style='margin:4px 0 2px'>☁ Nuvens: GOES-East IR (cores quentes/frias = topos mais altos)</div>"
     if alcance:
-        itens += "<div class='rl-sub' style='margin:6px 0 2px'>&#9711; Alcance ao redor da capital (aproxime: zoom a partir de " + f"{ZOOM_MIN_ALCANCE:g}):</div>" + "".join(
+        itens += "<div class='rl-sub' style='margin:6px 0 2px'>&#9711; Alcance ao redor da capital:</div>" + "".join(
             f"<div class='rl-item'><span class='rl-anel' style='border-color:{cor_anel}'></span>{km} km</div>" for km, cor_anel in ALCANCES_KM
         )
     if glm:
@@ -1033,6 +1043,13 @@ def renderizar_estilo() -> None:
         .logo-cartao img { display:block; height:auto; }
         .logo-lateral { width:100%; max-width:210px; }
         .logo-topo { height:64px; width:auto; }
+        /* barras de rolagem mais grossas (barra lateral e página) */
+        [data-testid="stSidebar"], [data-testid="stSidebar"] *, [data-testid="stMain"], [data-testid="stAppViewContainer"] { scrollbar-width: auto !important; }
+        [data-testid="stSidebar"] *::-webkit-scrollbar, [data-testid="stMain"]::-webkit-scrollbar, [data-testid="stAppViewContainer"] *::-webkit-scrollbar { width: 16px; height: 16px; }
+        [data-testid="stSidebar"] *::-webkit-scrollbar-track, [data-testid="stMain"]::-webkit-scrollbar-track, [data-testid="stAppViewContainer"] *::-webkit-scrollbar-track { background: #14171c; }
+        [data-testid="stSidebar"] *::-webkit-scrollbar-thumb, [data-testid="stMain"]::-webkit-scrollbar-thumb, [data-testid="stAppViewContainer"] *::-webkit-scrollbar-thumb { background: #566274; border-radius: 10px; border: 3px solid #14171c; min-height: 48px; }
+        [data-testid="stSidebar"] *::-webkit-scrollbar-thumb:hover, [data-testid="stMain"]::-webkit-scrollbar-thumb:hover, [data-testid="stAppViewContainer"] *::-webkit-scrollbar-thumb:hover { background: #7a889b; }
+        @supports (-moz-appearance: none) { [data-testid="stSidebar"], [data-testid="stSidebar"] *, [data-testid="stMain"], [data-testid="stAppViewContainer"] { scrollbar-color: #566274 #14171c !important; } }
         .creditos { font-size:.72rem; color:#9aa5b1; line-height:1.4; margin:.1rem 0 .5rem; overflow-wrap:anywhere; }
         .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
         .marca-lateral { display:flex; align-items:center; gap:.6rem; margin-bottom:.1rem; }
@@ -1314,7 +1331,7 @@ def main() -> None:
             alcance = st.toggle(
                 "Alcance ao redor das capitais (30, 50 e 100 km)", value=True,
                 help="Anéis tracejados de 30 km (verde), 50 km (amarelo) e 100 km (vermelho) em volta de cada capital: os mesmos raios usados "
-                     "para verificar o escore contra os raios observados pelo GLM. Aparecem quando você aproxima o mapa (zoom a partir de 6).",
+                     "para verificar o escore contra os raios observados pelo GLM.",
             )
             glm = False
             if glm_ao_vivo is not None:
@@ -1577,6 +1594,9 @@ def main() -> None:
             "sistemas de detecção de descargas atmosféricas. Em caso de trovoada, procure abrigo em local fechado."
         )
         st.caption(f"Última renderização local: {datetime.now(TZ_BRASILIA).strftime('%d/%m/%Y %H:%M:%S')} (America/Sao_Paulo).")
+
+    if glm:
+        canal_glm()  # entrega os raios novos ao mapa a cada coleta (5 min), sem recarregar o mapa nem a página
 
 
 if __name__ == "__main__":
