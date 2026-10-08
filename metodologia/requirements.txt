@@ -1,0 +1,4 @@
+# Só para a verificação contra o GLM (o painel em si não precisa disto)
+numpy>=1.26
+pandas>=2.0
+scikit-learn>=1.4

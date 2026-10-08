@@ -1,0 +1,133 @@
+{
+ "AC": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "AL": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "AM": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "AP": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "BA": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "CE": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "DF": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "ES": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "GO": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "MA": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "MG": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "MS": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "MT": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "PA": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "PB": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "PE": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "PI": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "PR": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "RJ": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "RN": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "RO": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "RR": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "RS": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "SC": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "SE": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "SP": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "TO": {
+  "fator_cape": 1.0,
+  "fator_li": 1.0
+ },
+ "gate_precipitacao": {
+  "ufs": [],
+  "limiar_mm_h": 1.0,
+  "janela_h": 3,
+  "multiplicador": 0.5
+ },
+ "correcao_costeira": {
+  "fator": 0.4,
+  "ufs": [
+   "AL",
+   "BA",
+   "CE",
+   "ES",
+   "MA",
+   "PB",
+   "PE",
+   "RJ",
+   "RN",
+   "SC",
+   "SE"
+  ],
+  "nota": "Capitais litorâneas (Maceió, Salvador, Fortaleza, Vitória, São Luís, João Pessoa, Recife, Rio de Janeiro, Natal, Florianópolis, Aracaju). Fator PROVISÓRIO sobre o produto CAPE x chuva; ver README. Esvazie 'ufs' ou use fator 1,0 para desligar."
+ }
+}
