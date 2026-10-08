@@ -102,7 +102,7 @@ def compactar(raios: list[list]) -> list[list]:
     return saida
 
 
-def amostrar_por_faixa(raios: list[list], maximo: int, faixa_s: int = FAIXA_S) -> list[list]:
+def amostrar_por_faixa(raios: list[list], maximo: int, faixa_s: int = FAIXA_S, n_faixas: int = JANELA_MIN * 60 // FAIXA_S) -> list[list]:
     """Limita a quantidade SEM favorecer só os mais recentes: cada faixa de idade (5 min) recebe a mesma cota.
 
     Cortar sempre os mais antigos faria sumirem o amarelo e o verde nas tempestades fortes. Dentro da faixa, a amostra é
@@ -112,7 +112,7 @@ def amostrar_por_faixa(raios: list[list], maximo: int, faixa_s: int = FAIXA_S) -
         return raios
     faixas: dict[int, list[list]] = {}
     for r in raios:
-        faixas.setdefault(r[2] // faixa_s, []).append(r)
+        faixas.setdefault(min(r[2] // faixa_s, n_faixas - 1), []).append(r)  # idade == 20 min fica na última faixa (verde)
     cota = max(1, maximo // len(faixas))
     saida: list[list] = []
     for k in sorted(faixas):

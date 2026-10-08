@@ -26,10 +26,12 @@ from jinja2 import Template
 from streamlit_folium import st_folium
 
 
-# Carimbo de versão (aparece na barra lateral): ajuda a conferir qual cópia do app está no ar.
+# Carimbo de versão: fica no texto de ajuda (passar o mouse) dos créditos da barra lateral, para conferir qual cópia está no ar.
+# Os anéis só aparecem a partir deste zoom: abaixo dele o anel de 30 km mede menos que a bolinha da capital e viraria uma mancha.
+ZOOM_MIN_ALCANCE = 6
 # Alcance ao redor das capitais (km, cor): os mesmos raios usados na verificação contra o GLM. Linhas grossas e tracejadas.
 ALCANCES_KM = ((30, "#2ecc40"), (50, "#ffd400"), (100, "#e11d1d"))  # verde, amarelo, vermelho
-VERSAO_APP = "2026-10-08d · raios GLM 20 min (vermelho, laranja, amarelo, verde) + alcance tracejado 30 km verde, 50 km amarelo, 100 km vermelho"
+VERSAO_APP = "2026-10-08e"  # aparece só ao passar o mouse nos créditos da barra lateral
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -223,6 +225,62 @@ def carregar_geojson(arquivo: str) -> dict[str, Any]:
     return json.loads((RAIZ / "dados" / arquivo).read_text(encoding="utf-8"))
 
 
+class AneisAlcance(MacroElement):
+    """Anéis de alcance acima das bolinhas das capitais e visíveis só a partir de ``zoom_min``.
+
+    Fase "painel": cria o painel 'aneis' (acima dos marcadores, sem capturar o mouse). Deve ser adicionada ANTES do grupo de
+    círculos, para o painel existir quando os círculos forem criados. Fase "zoom": liga/desliga o grupo conforme o zoom.
+    """
+
+    _template = Template(
+        """
+        {% macro script(this, kwargs) %}
+        (function () {
+            var mapa = {{ this._parent.get_name() }};
+            {% if this.fase == "painel" %}
+            mapa.createPane('aneis');
+            var painel = mapa.getPane('aneis');
+            painel.style.zIndex = 620;            // acima dos marcadores (600) e abaixo dos tooltips (650)
+            painel.style.pointerEvents = 'none';  // não captura cliques nem o mouse
+            {% else %}
+            var grupo = {{ this.grupo }};
+            var ZMIN = {{ this.zoom_min }};
+            function atualizar() {
+                var visivel = mapa.getZoom() >= ZMIN;
+                if (visivel && !mapa.hasLayer(grupo)) { mapa.addLayer(grupo); }
+                if (!visivel && mapa.hasLayer(grupo)) { mapa.removeLayer(grupo); }
+            }
+            mapa.on('zoomend', atualizar);
+            mapa.whenReady(atualizar);
+            {% endif %}
+        })();
+        {% endmacro %}
+        """
+    )
+
+    def __init__(self, fase: str, grupo: str = "", zoom_min: float = ZOOM_MIN_ALCANCE) -> None:
+        super().__init__()
+        self._name = "AneisAlcance"
+        self.fase, self.grupo, self.zoom_min = fase, grupo, zoom_min
+
+
+def adicionar_alcance(mapa: folium.Map, tabela: pd.DataFrame) -> None:
+    """Anéis de 30, 50 e 100 km (verde, amarelo e vermelho; grossos e tracejados) ao redor de cada capital."""
+    mapa.add_child(AneisAlcance("painel"))
+    grupo = folium.FeatureGroup(name="Alcance (30, 50 e 100 km)", control=False)
+    for _, linha in tabela.iterrows():
+        for km, cor_anel in reversed(ALCANCES_KM):  # do maior para o menor: o anel de 30 km fica por cima
+            anel = folium.Circle(
+                location=[linha["Latitude"], linha["Longitude"]], radius=km * 1000, color=cor_anel, weight=4,
+                opacity=0.95, dash_array="12 8", fill=True, fill_color=cor_anel, fill_opacity=0.04,
+            )
+            anel.options["interactive"] = False  # o folium descarta esses dois argumentos no construtor
+            anel.options["pane"] = "aneis"
+            anel.add_to(grupo)
+    grupo.add_to(mapa)
+    mapa.add_child(AneisAlcance("zoom", grupo=grupo.get_name()))
+
+
 class RaiosGLM(MacroElement):
     """Camada de raios do GLM que se atualiza sozinha no navegador, sem acionar o Streamlit.
 
@@ -268,7 +326,7 @@ class RaiosGLM(MacroElement):
                 if (m <= 5) { return {r: 4.5, f: '#e11d1d', b: '#5c0a0a'}; }    // vermelho: os mais recentes
                 if (m <= 10) { return {r: 4, f: '#ff8a00', b: '#6b3500'}; }     // laranja
                 if (m <= 15) { return {r: 3.5, f: '#ffe000', b: '#6b5a00'}; }   // amarelo
-                return {r: 3, f: '#2ecc40', b: '#0f5a1a'};                       // verde (15 a 20 min); depois some
+                return {r: 3.6, f: '#2ecc40', b: '#08330f'};                     // verde (15 a 20 min); depois some
             }
             function texto(n, d, cls) {
                 var el = chip.getContainer();
@@ -473,7 +531,7 @@ def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: boo
     if goes:
         itens += "<div class='rl-sub' style='margin:4px 0 2px'>☁ Nuvens: GOES-East IR (cores quentes/frias = topos mais altos)</div>"
     if alcance:
-        itens += "<div class='rl-sub' style='margin:6px 0 2px'>&#9711; Alcance ao redor da capital:</div>" + "".join(
+        itens += "<div class='rl-sub' style='margin:6px 0 2px'>&#9711; Alcance ao redor da capital (aproxime: zoom a partir de " + f"{ZOOM_MIN_ALCANCE:g}):</div>" + "".join(
             f"<div class='rl-item'><span class='rl-anel' style='border-color:{cor_anel}'></span>{km} km</div>" for km, cor_anel in ALCANCES_KM
         )
     if glm:
@@ -647,17 +705,7 @@ def criar_mapa(
         ).add_to(mapa)
 
     if alcance:
-        # Anéis de 30, 50 e 100 km ao redor de cada capital (verde, amarelo e vermelho), grossos e tracejados, sem capturar cliques.
-        grupo_alcance = folium.FeatureGroup(name="Alcance (30, 50 e 100 km)", control=False)
-        for _, linha in tabela.iterrows():
-            for km, cor_anel in reversed(ALCANCES_KM):  # do maior para o menor: o anel de 30 km fica por cima
-                anel = folium.Circle(
-                    location=[linha["Latitude"], linha["Longitude"]], radius=km * 1000, color=cor_anel, weight=4,
-                    opacity=0.95, dash_array="12 8", fill=True, fill_color=cor_anel, fill_opacity=0.04,
-                )
-                anel.options["interactive"] = False  # o folium descarta esse argumento no construtor; sem isso o anel captura o mouse
-                anel.add_to(grupo_alcance)
-        grupo_alcance.add_to(mapa)
+        adicionar_alcance(mapa, tabela)
     if glm:
         # Raios do GLM: desenhados no navegador e atualizados sozinhos (sem recarregar a página nem acionar o Streamlit).
         inicial = glm_ao_vivo.dados_atuais(aguardar_s=12) if glm_ao_vivo else None  # no 1º acesso, espera a 1ª coleta (raios de antes da abertura)
@@ -985,6 +1033,7 @@ def renderizar_estilo() -> None:
         .logo-cartao img { display:block; height:auto; }
         .logo-lateral { width:100%; max-width:210px; }
         .logo-topo { height:64px; width:auto; }
+        .creditos { font-size:.72rem; color:#9aa5b1; line-height:1.4; margin:.1rem 0 .5rem; overflow-wrap:anywhere; }
         .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
         .marca-lateral { display:flex; align-items:center; gap:.6rem; margin-bottom:.1rem; }
         .marca-lateral .raio { width:2.1rem; height:2.1rem; border-radius:10px; display:grid; place-items:center; font-size:1.15rem; background:linear-gradient(135deg,#f5c518,#e0761f); box-shadow:0 4px 14px rgba(224,118,31,.35); }
@@ -1236,7 +1285,12 @@ def main() -> None:
             unsafe_allow_html=True,
         )
         st.caption("PAINEL METEOROLÓGICO")
-        st.caption(f"Versão {VERSAO_APP}")
+        st.markdown(
+            f"<div class='creditos' title='Versão {escape(VERSAO_APP)}'>"
+            "Elaborado por: Mário Henrique | mario.vanderlei@icat.ufal.br<br>"
+            "Mayara Christine | mayara.lins@icat.ufal.br</div>",
+            unsafe_allow_html=True,
+        )
 
         with st.expander("Dados", expanded=True):
             modelo_id = st.selectbox(
@@ -1260,7 +1314,7 @@ def main() -> None:
             alcance = st.toggle(
                 "Alcance ao redor das capitais (30, 50 e 100 km)", value=True,
                 help="Anéis tracejados de 30 km (verde), 50 km (amarelo) e 100 km (vermelho) em volta de cada capital: os mesmos raios usados "
-                     "para verificar o escore contra os raios observados pelo GLM.",
+                     "para verificar o escore contra os raios observados pelo GLM. Aparecem quando você aproxima o mapa (zoom a partir de 6).",
             )
             glm = False
             if glm_ao_vivo is not None:

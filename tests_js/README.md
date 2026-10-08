@@ -9,6 +9,8 @@ camada e que um arquivo sem raios esvazia o mapa.
 cd tests_js
 npm install leaflet jsdom
 python gerar_mapa_teste.py
+python gerar_mapa_aneis.py
 node teste_camada_glm.js
 node teste_envelhecimento.js   # cores por idade e desaparecimento após 20 min (relógio adiantado)
+node teste_aneis.js            # anéis de alcance: painel acima das bolinhas, zoom mínimo 6, cores e tracejado
 ```

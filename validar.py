@@ -303,6 +303,10 @@ def testes_glm_ao_vivo() -> None:
         faixas = [sum(1 for r in amostra if r[2] // 300 == k) for k in range(4)]
         assert len(amostra) <= g.MAX_RAIOS and all(abs(n - g.MAX_RAIOS // 4) <= 1 for n in faixas), faixas  # as 4 cores com a mesma cota
         assert g.amostrar_por_faixa(enorme[:100], 1000) == enorme[:100]
+        com_borda = enorme + [[-5.0, -40.0, 1200]] * 50  # idade exatamente 20 min: não pode virar uma 5ª faixa que tire cota do verde
+        am2 = g.amostrar_por_faixa(com_borda, g.MAX_RAIOS)
+        assert len({r[2] // 300 if r[2] < 1200 else 3 for r in am2}) == 4 and len(am2) <= g.MAX_RAIOS
+        assert sum(1 for r in am2 if r[2] >= 900) == g.MAX_RAIOS // 4  # a faixa verde recebe a cota inteira
         rep = [[-3.7, -38.5, 10], [-3.7, -38.5, 25], [-3.7, -38.5, 70], [-3.8, -38.5, 12]]
         assert g.compactar(rep) == [[-3.7, -38.5, 10], [-3.7, -38.5, 70], [-3.8, -38.5, 12]]
     print("Testes do GLM ao vivo (coleta incremental, janela de 20 min, antes da abertura, arquivo ruim, gravação atômica): OK")
@@ -325,7 +329,9 @@ def testes_sem_cadastro() -> None:
         assert not at.exception
         assert any("CAPITAIS" in str(c.value) for c in at.caption)  # o painel já aparece na primeira tela
         assert not any("e-mail" in str(t_.label).lower() for t_ in at.text_input)  # nenhum campo de e-mail
-        assert any("Versão 2026-10-08d" in str(c.value) for c in at.caption)
+        md = " ".join(str(m.value) for m in at.markdown)
+        assert "Elaborado por: Mário Henrique | mario.vanderlei@icat.ufal.br" in md and "Mayara Christine | mayara.lins@icat.ufal.br" in md
+        assert not any("Versão" in str(c.value) for c in at.caption)  # o carimbo saiu da tela (fica só no texto de ajuda dos créditos)
     finally:
         modelos.buscar_modelo = original
         if antigo is None:
@@ -358,6 +364,9 @@ def testes_mapa_alcance() -> None:
         blocos = [b for b in re.findall(r"L\.circle\(.*?\)\.addTo", h, flags=re.S) if re.search(r'"radius": %d\b' % (km * 1000), b)]
         assert len(blocos) == len(ESTACOES) and all(f'"color": "{cor}"' in b and '"interactive": false' in b and '"weight": 4' in b and '"dashArray": "12 8"' in b for b in blocos), km
     assert all(x in h for x in ("Alcance ao redor da capital", "30 km", "50 km", "100 km"))
+    # os anéis ficam em um painel ACIMA das bolinhas das capitais (senão o de 30 km some embaixo delas) e só aparecem com zoom suficiente
+    assert len(re.findall(r'"pane": "aneis"', h)) == 3 * len(ESTACOES) and ".createPane('aneis')" in h and "zIndex = 620" in h
+    assert f"var ZMIN = {pdea_app.ZOOM_MIN_ALCANCE}" in h and "zoom a partir de 6" in h and pdea_app.ZOOM_MIN_ALCANCE == 6
     assert "L.circle(" not in mapa(False) and "Alcance ao redor da capital" not in mapa(False)
     print("Testes do alcance de 30, 50 e 100 km (verde, amarelo, vermelho; grossos e tracejados): OK")
 
