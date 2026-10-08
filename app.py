@@ -25,12 +25,11 @@ from branca.element import Element, MacroElement
 from jinja2 import Template
 from streamlit_folium import st_folium
 
-import cadastro
 
-# Carimbo de versão (aparece na tela de cadastro e na barra lateral): ajuda a conferir qual cópia do app está no ar.
+# Carimbo de versão (aparece na barra lateral): ajuda a conferir qual cópia do app está no ar.
 # Alcance ao redor das capitais (km, cor): os mesmos raios usados na verificação contra o GLM.
 ALCANCES_KM = ((30, "#e11d1d"), (50, "#ff8a00"), (100, "#ffd400"))  # vermelho, laranja, amarelo
-VERSAO_APP = "2026-10-08 · raios GLM 20 min (vermelho, laranja, amarelo, verde) + alcance 30/50/100 km + cadastro de e-mail"
+VERSAO_APP = "2026-10-08b · raios GLM 20 min (vermelho, laranja, amarelo, verde) + alcance 30/50/100 km (sem cadastro de e-mail)"
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -970,7 +969,6 @@ def renderizar_estilo() -> None:
         .logo-cartao img { display:block; height:auto; }
         .logo-lateral { width:100%; max-width:210px; }
         .logo-topo { height:64px; width:auto; }
-        .logo-entrada { height:92px; width:auto; }
         .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
         .marca-lateral { display:flex; align-items:center; gap:.6rem; margin-bottom:.1rem; }
         .marca-lateral .raio { width:2.1rem; height:2.1rem; border-radius:10px; display:grid; place-items:center; font-size:1.15rem; background:linear-gradient(135deg,#f5c518,#e0761f); box-shadow:0 4px 14px rgba(224,118,31,.35); }
@@ -1201,57 +1199,6 @@ def secao_mapa(tabela: pd.DataFrame, ctx: dict[str, Any], estilo: str, mostrar_s
         abrir_detalhamento(st.session_state["estacao_popup"], ctx)
 
 
-def _config_cadastro() -> "cadastro.ConfigCadastro":
-    """Configuração do cadastro de e-mail: Secrets do Streamlit (seção [cadastro]) ou variáveis de ambiente."""
-    try:
-        mapa = dict(st.secrets.get("cadastro", {}))
-    except Exception:  # noqa: BLE001 - sem arquivo de secrets, só as variáveis de ambiente valem
-        mapa = {}
-    return cadastro.ler_config(mapa)
-
-
-@st.cache_resource
-def _servico_cadastro() -> "cadastro.Cadastro":
-    return cadastro.Cadastro(_config_cadastro())
-
-
-def portao_de_entrada() -> None:
-    """Pede o e-mail na entrada (uma vez por sessão), com aviso de privacidade e consentimento. Interrompe a página até o cadastro."""
-    cfg = _config_cadastro()
-    if not cfg.ativo or st.session_state.get("cadastro_ok"):
-        return
-    st.markdown("<div style='height:6vh'></div>", unsafe_allow_html=True)
-    _, centro, _ = st.columns([1, 1.5, 1])
-    with centro:
-        st.markdown(f"<div class='logo-cartao'>{_html_logo('logo-entrada')}</div>", unsafe_allow_html=True)
-        st.subheader("Bem-vindo ao PDEA")
-        st.caption(f"Versão {VERSAO_APP}")
-        st.write("Informe seu e-mail para acessar o painel de previsão de descargas atmosféricas das capitais brasileiras.")
-        with st.form("cadastro_email", clear_on_submit=False):
-            email = st.text_input("Seu e-mail", placeholder="nome@exemplo.com", max_chars=254)
-            consentiu = st.checkbox("Concordo em fornecer meu e-mail para a finalidade descrita no aviso de privacidade.")
-            enviar = st.form_submit_button("Entrar no painel", type="primary", width="stretch")
-        with st.expander("Aviso de privacidade (LGPD)"):
-            remocao = f"escreva para {cfg.contato}" if cfg.contato else "entre em contato com o responsável pelo painel"
-            st.markdown(
-                "- **Finalidade:** saber quem usa o painel e, se necessário, entrar em contato sobre o projeto "
-                "(por exemplo, atualizações ou pesquisa de uso).\n"
-                "- **Base legal:** o seu consentimento (LGPD, art. 7º, I). Você pode não concordar, mas então não acessa o painel.\n"
-                "- **Como é tratado:** o e-mail é enviado por mensagem ao responsável pelo PDEA e guardado em arquivo no servidor do "
-                "painel. Passa pelos serviços de e-mail e de hospedagem usados pelo painel. Não é vendido nem usado para publicidade de terceiros.\n"
-                f"- **Remoção e dúvidas:** para pedir a exclusão do seu e-mail, {remocao}.\n"
-                "- O painel é uma previsão de modelo e não substitui alertas oficiais."
-            )
-        if enviar:
-            ok, resposta = _servico_cadastro().registrar(email, consentiu)
-            if ok:
-                st.session_state["cadastro_ok"] = True
-                st.rerun()
-            else:
-                st.error(resposta)
-    st.stop()
-
-
 @st.cache_resource
 def _iniciar_coleta_glm() -> bool:
     """Liga, uma única vez por processo do servidor, a coleta dos raios do GLM (a cada 5 min)."""
@@ -1264,8 +1211,7 @@ def _iniciar_coleta_glm() -> bool:
 def main() -> None:
     _inicializar_estado()
     renderizar_estilo()
-    _iniciar_coleta_glm()  # a coleta começa já na tela de cadastro: os raios estarão prontos quando o painel abrir
-    portao_de_entrada()
+    _iniciar_coleta_glm()  # a coleta dos raios começa assim que o app sobe: os raios recentes já estarão prontos
 
     # ------------------------------------------------------------------ barra lateral (controles)
     with st.sidebar:

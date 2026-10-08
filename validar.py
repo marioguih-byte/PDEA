@@ -293,133 +293,31 @@ def testes_glm_ao_vivo() -> None:
     print("Testes do GLM ao vivo (coleta incremental, janela de 20 min, antes da abertura, arquivo ruim, gravação atômica): OK")
 
 
-def testes_cadastro() -> None:
-    """Cadastro de e-mail: validação, consentimento, notificação por SMTP simulado, limite por hora, falhas e a tela do app."""
-    import csv
+def testes_sem_cadastro() -> None:
+    """O painel abre direto, sem pedir e-mail, e mostra o carimbo de versão."""
     import os
 
-    import cadastro as cd
-
-    for ok in ("a@b.com", "nome.sobrenome+x@mail.com.br", " MAIUSCULA@Exemplo.COM "):
-        assert cd.email_valido(ok), ok
-    for ruim in ("", "a@b", "a b@c.com", "a@b..com", "a@b.com\nBcc: x@y.com", "a@b.com\r\nSubject: x", "@b.com", ".a@b.com", "a@@b.com", "a" * 300 + "@b.com"):
-        assert not cd.email_valido(ruim), repr(ruim)
-
-    # configuração: Secrets primeiro, depois variáveis de ambiente
-    c = cd.ler_config({"destino": " Dono@Exemplo.com ", "smtp_user": "u@x.com", "smtp_pass": "s", "smtp_port": "465"}, env={"SMTP_HOST": "h.x"})
-    assert c.destino == "dono@exemplo.com" and c.porta == 465 and c.host == "h.x" and c.remetente == "u@x.com" and c.pode_enviar and c.ativo
-    assert not cd.ler_config({}, env={}).pode_enviar and cd.ler_config({"ativo": "false"}, env={}).ativo is False
-    assert cd.ler_config({}, env={"PDEA_CADASTRO_ATIVO": "0"}).ativo is False and cd.ler_config({}, env={"SMTP_PORT": "xx"}).porta == 587
-
-    class SMTPFalso:
-        enviadas: list = []
-        logins: list = []
-        falhar = False
-
-        def __init__(self, host, porta, timeout=None):
-            self.host, self.porta = host, porta
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def starttls(self):
-            pass
-
-        def login(self, u, s):
-            SMTPFalso.logins.append((u, s))
-
-        def send_message(self, msg):
-            if SMTPFalso.falhar:
-                raise OSError("rede fora")
-            SMTPFalso.enviadas.append(msg)
-
-    cfg = cd.ConfigCadastro(destino="dono@exemplo.com", usuario="envio@exemplo.com", senha="segredo", remetente="envio@exemplo.com")
-    relogio = [1000.0]
-
-    def novo(pasta, config=cfg):
-        SMTPFalso.enviadas, SMTPFalso.logins, SMTPFalso.falhar = [], [], False
-        return cd.Cadastro(config, arquivo=Path(pasta) / "c.csv", smtp_fabrica=SMTPFalso, assincrono=False,
-                           agora=lambda: relogio[0], espera=lambda s: None)
-
-    with tempfile.TemporaryDirectory() as p:
-        cad = novo(p)
-        assert cad.registrar("a@b.com", False)[0] is False and cad.registrar("ruim", True)[0] is False and not SMTPFalso.enviadas
-        assert cad.registrar("Maria@Exemplo.com", True) == (True, "ok")
-        m = SMTPFalso.enviadas[0]
-        assert m["To"] == "dono@exemplo.com" and m["From"] == "envio@exemplo.com" and "novo cadastro" in m["Subject"].lower()
-        assert "maria@exemplo.com" in m.get_content() and "maria@exemplo.com" not in " ".join(f"{k}: {v}" for k, v in m.items()).lower()
-        assert SMTPFalso.logins == [("envio@exemplo.com", "segredo")]
-        assert cad.registrar("maria@exemplo.com", True) == (True, "ja_cadastrado") and len(SMTPFalso.enviadas) == 1  # sem duplicar aviso
-        assert cad.registrar("+x@b.com", True)[0]
-        linhas = list(csv.reader((Path(p) / "c.csv").open(encoding="utf-8")))
-        assert linhas[0] == ["criado_em_utc", "email", "consentimento", "versao_do_aviso"] and linhas[1][1] == "maria@exemplo.com"
-        assert linhas[2][1] == "'+x@b.com" and all(l[2] == "sim" for l in linhas[1:])  # neutraliza fórmula de planilha
-        assert novo(p).total() == 2 and novo(p).registrar("maria@exemplo.com", True)[1] == "ja_cadastrado"  # lê o arquivo existente
-
-    with tempfile.TemporaryDirectory() as p:  # limite de avisos por hora: o excedente segue no CSV e vai junto no próximo aviso
-        cad = novo(p)
-        for i in range(cd.LIMITE_POR_HORA + 2):
-            cad.registrar(f"u{i}@exemplo.com", True)
-        assert len(SMTPFalso.enviadas) == cd.LIMITE_POR_HORA and cad.total() == cd.LIMITE_POR_HORA + 2
-        relogio[0] += 3700
-        cad.registrar("depois@exemplo.com", True)
-        corpo = SMTPFalso.enviadas[-1].get_content()
-        assert "depois@exemplo.com" in corpo and f"u{cd.LIMITE_POR_HORA}@exemplo.com" in corpo and f"u{cd.LIMITE_POR_HORA + 1}@exemplo.com" in corpo
-
-    with tempfile.TemporaryDirectory() as p:  # falha de SMTP: o visitante entra, o erro é registrado e o e-mail vai no próximo aviso
-        cad = novo(p)
-        SMTPFalso.falhar = True
-        assert cad.registrar("falha@exemplo.com", True)[0] is True and cad.ultimo_erro and "OSError" in cad.ultimo_erro
-        assert "falha@exemplo.com" in (Path(p) / "falhas_de_envio.log").read_text(encoding="utf-8")
-        SMTPFalso.falhar = False
-        cad.registrar("volta@exemplo.com", True)
-        assert "falha@exemplo.com" in SMTPFalso.enviadas[-1].get_content()
-
-    with tempfile.TemporaryDirectory() as p:  # sem SMTP configurado: só guarda
-        cad = novo(p, cd.ConfigCadastro())
-        assert cad.registrar("so@guardar.com", True)[0] and not SMTPFalso.enviadas and cad.total() == 1
-
-    # tela de cadastro no app
-    from streamlit.testing.v1 import AppTest
     import modelos
+    from datetime import datetime as _dt
+    from streamlit.testing.v1 import AppTest
 
-    antigos = {k: os.environ.get(k) for k in ("PDEA_CADASTRO_ATIVO", "PDEA_CADASTRO_CONTATO", "SMTP_USER", "SMTP_PASS", "PDEA_CADASTRO_DESTINO")}
-    original = (cd.ARQUIVO, modelos.buscar_modelo)
+    original = modelos.buscar_modelo
+    antigo = os.environ.get("PDEA_HISTORICO")
     try:
-        with tempfile.TemporaryDirectory() as p:
-            cd.ARQUIVO = Path(p) / "app.csv"
-            for k in ("SMTP_USER", "SMTP_PASS", "PDEA_CADASTRO_DESTINO"):
-                os.environ.pop(k, None)
-            os.environ["PDEA_CADASTRO_ATIVO"], os.environ["PDEA_CADASTRO_CONTATO"] = "true", "contato@exemplo.com"
-            modelos.buscar_modelo = lambda *a, **k: (_ for _ in ()).throw(modelos.ErroBuscaModelo("simulado"))
-            def novo_app():
-                return AppTest.from_file("app.py", default_timeout=60).run()
-
-            at = novo_app()
-            assert not at.exception and len(at.text_input) == 1 and len(at.checkbox) == 1
-            assert not any("CAPITAIS" in str(c.value) for c in at.caption)  # o painel não aparece antes do cadastro
-            at = novo_app(); at.text_input[0].set_value("ruim"); at.checkbox[0].check(); at.button[0].click().run()
-            assert at.error and "cadastro_ok" not in at.session_state  # e-mail inválido
-            at = novo_app(); at.text_input[0].set_value("pessoa@exemplo.com"); at.button[0].click().run()
-            assert at.error and "cadastro_ok" not in at.session_state  # sem consentimento não entra
-            at = novo_app(); at.text_input[0].set_value("pessoa@exemplo.com"); at.checkbox[0].check(); at.button[0].click().run()
-            assert "cadastro_ok" in at.session_state and not at.exception
-            assert "pessoa@exemplo.com" in (Path(p) / "app.csv").read_text(encoding="utf-8")
-            desligado = AppTest.from_file("app.py", default_timeout=60)
-            os.environ["PDEA_CADASTRO_ATIVO"] = "false"
-            desligado.run()
-            assert not desligado.exception and len(desligado.text_input) <= 1 and not any("Bem-vindo" in str(s.value) for s in desligado.subheader)
+        os.environ["PDEA_HISTORICO"] = "desligado"
+        modelos.buscar_modelo = lambda *a, **k: {**_dados_sinteticos(), "_obtido_em": _dt.now(modelos.TZ_BRASILIA).isoformat(), "_extras": False, "_erro_extras": "teste"}
+        at = AppTest.from_file("app.py", default_timeout=90).run()
+        assert not at.exception
+        assert any("CAPITAIS" in str(c.value) for c in at.caption)  # o painel já aparece na primeira tela
+        assert not any("e-mail" in str(t_.label).lower() for t_ in at.text_input)  # nenhum campo de e-mail
+        assert any("Versão 2026-10-08b" in str(c.value) for c in at.caption)
     finally:
-        cd.ARQUIVO, modelos.buscar_modelo = original
-        for k, val in antigos.items():
-            if val is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = val
-    print("Testes do cadastro de e-mail (validação, consentimento, SMTP simulado, limite, falhas, tela): OK")
+        modelos.buscar_modelo = original
+        if antigo is None:
+            os.environ.pop("PDEA_HISTORICO", None)
+        else:
+            os.environ["PDEA_HISTORICO"] = antigo
+    print("Teste: o painel abre direto, sem pedir e-mail: OK")
 
 
 def testes_mapa_alcance() -> None:
@@ -663,7 +561,7 @@ if __name__ == "__main__":
     testes_offline()
     testes_capexp()
     testes_glm_ao_vivo()
-    testes_cadastro()
+    testes_sem_cadastro()
     testes_mapa_alcance()
     testes_ampliados()
     if "--online" in sys.argv:

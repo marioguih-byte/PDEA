@@ -39,8 +39,6 @@ Painel em **Streamlit** que mostra, para as **27 capitais brasileiras**, o poten
 | `analise.py` | Séries de score, tendência, extras e fatores por UF (sem dependência do Streamlit). |
 | `historico.py` | Histórico das previsões em SQLite (módulo e linha de comando). |
 | `app_camadas.py` | Endereço e atribuição da camada GOES. |
-| `cadastro.py` | Cadastro de e-mail na entrada (validação, consentimento, registro em CSV e notificação por SMTP ao responsável). |
-| `.streamlit/secrets.toml.example` | Modelo dos Secrets do cadastro (destino, SMTP). Copie para `secrets.toml` ou cole nos Secrets do Streamlit; **nunca** suba preenchido ao GitHub. |
 | `glm_ao_vivo.py` | Coleta dos raios do GLM em segundo plano (a cada 5 min) e gravação de `static/glm_flashes.txt`. |
 | `assets/` | Logo do PDEA (`pdea_logo.png`) e ícone da aba (`pdea_icone.png`). |
 | `static/` | Pasta servida pelo Streamlit em `/app/static/` (`enableStaticServing`); recebe os arquivos dos raios. |
@@ -90,18 +88,7 @@ python validar.py --online --modelos # idem para os 12 modelos: mostra quais dev
 
 ## Como confirmar a versão no ar
 
-A tela de cadastro e a barra lateral mostram "Versão 2026-10-08 · raios GLM 20 min ... + cadastro de e-mail". Se esse texto não aparece, o que está rodando é uma cópia antiga do app: envie **todos** os arquivos ao GitHub (inclusive `cadastro.py`, `glm_ao_vivo.py`, `assets/`, `static/`, `requirements.txt` e `.streamlit/config.toml`) e use *Manage app > Reboot app* no Streamlit.
-
-## Cadastro de e-mail na entrada
-
-Ao abrir o painel, o visitante informa o e-mail e marca o consentimento (com aviso de privacidade expansível). Só então o painel aparece, uma vez por sessão. A coleta dos raios do GLM já começa nessa tela, para os dados estarem prontos quando o painel abrir.
-
-1. **Configure** (Streamlit Community Cloud: *App settings > Secrets*; local: `.streamlit/secrets.toml`), seguindo `.streamlit/secrets.toml.example`: `destino` (e-mail que recebe os avisos), `smtp_user` e `smtp_pass`. No Gmail, `smtp_pass` é uma **senha de app** (Conta Google > Segurança > Verificação em duas etapas > Senhas de app); a senha normal não funciona.
-2. **Cada novo e-mail** gera uma mensagem ao `destino` com o e-mail, a data e a hora. O mesmo e-mail não gera aviso duas vezes; há um limite de 20 avisos por hora (o excedente segue no arquivo e vai junto no próximo aviso); se o envio falhar, o visitante entra mesmo assim e o e-mail vai no próximo aviso e em `cadastro/falhas_de_envio.log`.
-3. **Todos os cadastros** ficam também em `cadastro/cadastros.csv` (não versionado). No Streamlit Community Cloud o disco é apagado quando o app reinicia: a mensagem por e-mail é o registro durável.
-4. **Desligar** (por exemplo, no desenvolvimento): `ativo = false` nos Secrets ou a variável `PDEA_CADASTRO_ATIVO=false`.
-
-Limites: o e-mail **não é verificado** (qualquer endereço de formato válido entra; para confirmar a posse seria preciso enviar um código ao visitante), e o visitante precisa informá-lo de novo a cada sessão. O texto do aviso de privacidade é um modelo: revise-o (inclusive quem é o responsável e o contato para pedidos de remoção, `contato` nos Secrets) antes de publicar.
+A barra lateral mostra "Versão 2026-10-08b · raios GLM 20 min ... (sem cadastro de e-mail)". Se esse texto não aparece, o que está rodando é uma cópia antiga do app: envie **todos** os arquivos ao GitHub (inclusive `glm_ao_vivo.py`, `assets/`, `static/`, `requirements.txt` e `.streamlit/config.toml`), com o `app.py` na **raiz** do repositório e use *Manage app > Reboot app* no Streamlit.
 
 ## Histórico
 
