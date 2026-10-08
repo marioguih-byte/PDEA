@@ -335,6 +335,10 @@ def testes_sem_cadastro() -> None:
         md = " ".join(str(m.value) for m in at.markdown)
         assert "Elaborado por: Mário Henrique | mario.vanderlei@icat.ufal.br" in md and "Mayara Christine | mayara.lins@icat.ufal.br" in md
         assert not any("Versão" in str(c.value) for c in at.caption)  # o carimbo saiu da tela (fica só no texto de ajuda dos créditos)
+        # cabeçalho: logo com altura própria (a regra genérica da caixa do logo não pode anulá-la) e informações em cartões rótulo/valor
+        assert "img.logo-topo { height:54px" in md and "img.logo-lateral" in md and ".logo-cartao img.logo-topo { height:44px" in md
+        assert "<div class='pdea-cabecalho'>" in md and "<span class='pl'>Modelo</span>" in md and "<span class='pl'>Hora exibida</span>" in md
+        assert "<span class='pl'>Dados</span>" in md and "class='ponto" in md and "@keyframes pdea-pulso" in md
     finally:
         modelos.buscar_modelo = original
         if antigo is None:
@@ -502,6 +506,22 @@ def testes_canal_e_rolagem() -> None:
         else:
             os.environ["PDEA_HISTORICO"] = antigo
     print("Testes do canal da página, da limpeza de arquivos velhos e da barra de rolagem: OK")
+
+
+def testes_legenda_retratil() -> None:
+    """A legenda do mapa é retrátil (<details>), começa aberta, lembra a escolha e traz todas as seções."""
+    import app as pdea_app
+
+    h = pdea_app._legenda_mapa(pdea_app.CORES_NIVEL, "19:00 (08/10)", "Best Match", goes=True, glm=True, alcance=True)
+    assert h.count('<details class="pdea-legenda" open>') == 1 and "<summary>" in h and '<span class="rl-titulo">Risco de raios</span>' in h
+    corpo = h.split('<div class="rl-corpo">', 1)[1].split("</details>", 1)[0]
+    assert all(x in corpo for x in ("Severo", "Nenhum", "Nuvens", "Alcance ao redor da capital", "30 km", "100 km", "Raios observados (GLM)", "15 a 20 min"))
+    assert "Risco de raios" not in corpo  # o título fica no summary (sempre visível), o resto recolhe
+    assert "__pdeaLegendaAberta" in h and "window.innerWidth < 700" in h and "addEventListener('toggle'" in h
+    assert ".pdea-legenda summary::after" in h and ".pdea-legenda:not([open]) summary::after" in h
+    simples = pdea_app._legenda_mapa(pdea_app.CORES_NIVEL, "19:00", "Best Match")
+    assert "Alcance ao redor" not in simples and "Raios observados" not in simples and "<details" in simples
+    print("Teste da legenda retrátil: OK")
 
 
 def testes_ampliados() -> None:
@@ -722,6 +742,7 @@ if __name__ == "__main__":
     testes_mapa_alcance()
     testes_manter_acordado()
     testes_canal_e_rolagem()
+    testes_legenda_retratil()
     testes_ampliados()
     if "--online" in sys.argv:
         from modelos import ErroBuscaModelo

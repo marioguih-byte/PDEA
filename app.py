@@ -533,6 +533,29 @@ class AjusteBrasil(MacroElement):
         self.limites = json.dumps(limites)
 
 
+# Lembra se a legenda estava aberta ou fechada, mesmo quando o mapa é redesenhado (o estado fica na janela mais alta acessível).
+# Sem escolha anterior, começa recolhida em telas estreitas.
+_JS_LEGENDA = """
+    <script>
+    (function () {
+        var el = document.querySelector('details.pdea-legenda');
+        if (!el) { return; }
+        var CHAVE = '__pdeaLegendaAberta';
+        function topo() {
+            var w = window;
+            try { while (w.parent && w.parent !== w) { void w.parent.document; w = w.parent; } } catch (e) {}
+            return w;
+        }
+        try {
+            var guardado = topo()[CHAVE];
+            if (guardado === false || (guardado === undefined && window.innerWidth < 700)) { el.removeAttribute('open'); }
+        } catch (e) {}
+        el.addEventListener('toggle', function () { try { topo()[CHAVE] = el.open; } catch (e) {} });
+    })();
+    </script>
+"""
+
+
 def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: bool = False, glm: bool = False, alcance: bool = False) -> str:
     itens = "".join(
         f"<div class='rl-item'><span class='rl-dot' style='background:{cores[nivel]}'></span>{nivel}</div>"
@@ -566,10 +589,19 @@ def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: boo
       .pdea-pin-wrap:hover .pdea-pin {{ box-shadow:0 0 0 8px var(--h), 0 2px 6px rgba(15,23,42,.45); }}
       .pdea-home a {{ font-size:20px; line-height:30px; text-align:center; color:#1f2933; }}
       .pdea-legenda {{ position:absolute; left:12px; bottom:64px; z-index:1000; background:rgba(255,255,255,.94);
-        border:1px solid rgba(15,23,42,.12); border-radius:10px; padding:8px 12px 6px;
-        font:12px 'Segoe UI', Arial, sans-serif; color:#1f2933; box-shadow:0 4px 14px rgba(15,23,42,.18); }}
-      .pdea-legenda .rl-titulo {{ font-weight:700; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
-        color:#52606d; margin-bottom:4px; }}
+        border:1px solid rgba(15,23,42,.12); border-radius:10px; padding:0;
+        font:12px 'Segoe UI', Arial, sans-serif; color:#1f2933; box-shadow:0 4px 14px rgba(15,23,42,.18);
+        max-height:calc(100vh - 84px); overflow-y:auto; }}
+      .pdea-legenda summary {{ display:flex; align-items:center; justify-content:space-between; gap:14px; cursor:pointer; list-style:none;
+        padding:8px 12px; user-select:none; }}
+      .pdea-legenda summary::-webkit-details-marker {{ display:none; }}
+      .pdea-legenda summary::after {{ content:""; width:7px; height:7px; border-right:2px solid #52606d; border-bottom:2px solid #52606d;
+        transform:rotate(45deg); margin:-3px 2px 0 0; transition:transform .15s ease; }}
+      .pdea-legenda:not([open]) summary::after {{ transform:rotate(-135deg); margin-top:3px; }}
+      .pdea-legenda summary:hover .rl-titulo {{ color:#1f2933; }}
+      .pdea-legenda summary:focus-visible {{ outline:2px solid #2f7bff; outline-offset:-2px; border-radius:10px; }}
+      .pdea-legenda .rl-corpo {{ padding:0 12px 8px; }}
+      .pdea-legenda .rl-titulo {{ font-weight:700; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:#52606d; }}
       .pdea-legenda .rl-sub {{ color:#7b8794; font-size:10.5px; margin:-2px 0 4px; }}
       .rl-anel {{ width:12px; height:12px; border-radius:50%; border:3px dashed; box-sizing:border-box; margin:0 0; }}
       .rl-raio {{ width:9px; height:9px; border-radius:50%; border:1px solid rgba(15,23,42,.55); margin:0 1px; }}
@@ -582,9 +614,9 @@ def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: boo
       .rl-item {{ display:flex; align-items:center; gap:7px; margin:3px 0; }}
       .rl-dot {{ width:11px; height:11px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px rgba(15,23,42,.25); }}
     </style>
-    <div class="pdea-legenda"><div class="rl-titulo">Risco de raios</div>
-      <div class="rl-sub">{escape(rotulo_hora)} · {escape(fonte)}</div>{itens}</div>
-    """
+    <details class="pdea-legenda" open><summary><span class="rl-titulo">Risco de raios</span></summary>
+      <div class="rl-corpo"><div class="rl-sub">{escape(rotulo_hora)} · {escape(fonte)}</div>{itens}</div></details>
+    """ + _JS_LEGENDA
 
 
 def _html_popup(linha: pd.Series, cor: str) -> str:
@@ -1041,8 +1073,8 @@ def renderizar_estilo() -> None:
         .logo-cartao { background:#ffffff; border-radius:12px; padding:.45rem .7rem; display:inline-flex; align-items:center;
             box-shadow:0 4px 14px rgba(0,0,0,.28); }
         .logo-cartao img { display:block; height:auto; }
-        .logo-lateral { width:100%; max-width:210px; }
-        .logo-topo { height:64px; width:auto; }
+        .logo-cartao img.logo-lateral { width:100%; max-width:210px; height:auto; }
+        .logo-cartao img.logo-topo { height:54px; width:auto; max-width:100%; }
         /* barras de rolagem mais grossas (barra lateral e página) */
         [data-testid="stSidebar"], [data-testid="stSidebar"] *, [data-testid="stMain"], [data-testid="stAppViewContainer"] { scrollbar-width: auto !important; }
         [data-testid="stSidebar"] *::-webkit-scrollbar, [data-testid="stMain"]::-webkit-scrollbar, [data-testid="stAppViewContainer"] *::-webkit-scrollbar { width: 16px; height: 16px; }
@@ -1056,16 +1088,21 @@ def renderizar_estilo() -> None:
         .marca-lateral .raio { width:2.1rem; height:2.1rem; border-radius:10px; display:grid; place-items:center; font-size:1.15rem; background:linear-gradient(135deg,#f5c518,#e0761f); box-shadow:0 4px 14px rgba(224,118,31,.35); }
         .marca-lateral b { font-size:1.25rem; letter-spacing:.03em; }
 
-        .pdea-cabecalho { display:flex; flex-wrap:wrap; align-items:center; gap:1rem 1.25rem; padding:1rem 1.25rem; margin-bottom:.9rem;
-            background:linear-gradient(120deg,#222a36 0%,#1b2029 60%,#171b22 100%); border:1px solid #333c49; border-radius:14px;
-            box-shadow:0 8px 28px rgba(0,0,0,.28); }
-        .pdea-cabecalho .raio { width:2.8rem; height:2.8rem; border-radius:12px; display:grid; place-items:center; font-size:1.5rem;
-            background:linear-gradient(135deg,#f5c518,#e0761f); box-shadow:0 6px 18px rgba(224,118,31,.38); }
-        .pdea-titulo { margin:0; font-size:1.6rem; font-weight:800; letter-spacing:.04em; line-height:1.1; }
-        .pdea-subtitulo { margin:.2rem 0 0; color:#a9b3c1; font-size:.85rem; }
-        .pdea-pills { margin-left:auto; display:flex; flex-wrap:wrap; gap:.5rem; }
-        .pill { background:#11151b; border:1px solid #394352; color:#d5dbe4; border-radius:999px; padding:.3rem .8rem; font-size:.78rem; }
-        .pill b { color:#ffffff; }
+        .pdea-cabecalho { position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:.9rem 1.4rem; padding:.85rem 1.2rem .85rem 1rem; margin-bottom:1rem;
+            background:radial-gradient(700px 160px at 0% 0%, rgba(47,123,255,.16) 0%, rgba(47,123,255,0) 70%), linear-gradient(120deg,#222a36 0%,#1b2029 60%,#171b22 100%);
+            border:1px solid #333c49; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.30); overflow:hidden; }
+        .pdea-cabecalho::before { content:""; position:absolute; left:0; right:0; top:0; height:3px;
+            background:linear-gradient(90deg,#2f7bff 0%,#2ecc40 38%,#ffd400 62%,#ff8a00 82%,#e11d1d 100%); opacity:.9; }
+        .pdea-cabecalho .logo-cartao { padding:.4rem .8rem; border-radius:12px; box-shadow:0 6px 18px rgba(0,0,0,.35); }
+        .pdea-pills { margin-left:auto; display:flex; flex-wrap:wrap; gap:.6rem; align-items:stretch; }
+        .pill { display:flex; flex-direction:column; justify-content:center; gap:.12rem; min-width:7.5rem; padding:.45rem .95rem;
+            background:rgba(255,255,255,.045); border:1px solid #3a4452; border-radius:12px; }
+        .pill .pl { font-size:.62rem; letter-spacing:.09em; text-transform:uppercase; color:#8f9bad; }
+        .pill b { font-size:.9rem; color:#ffffff; font-weight:650; white-space:nowrap; }
+        .pill .ponto { display:inline-block; width:.55rem; height:.55rem; border-radius:50%; margin-right:.4rem; vertical-align:.04rem; background:#2ecc40;
+            box-shadow:0 0 0 0 rgba(46,204,64,.55); animation:pdea-pulso 2.2s ease-out infinite; }
+        .pill .ponto.velho { background:#ff8a00; box-shadow:none; animation:none; }
+        @keyframes pdea-pulso { 0% { box-shadow:0 0 0 0 rgba(46,204,64,.55); } 70% { box-shadow:0 0 0 .5rem rgba(46,204,64,0); } 100% { box-shadow:0 0 0 0 rgba(46,204,64,0); } }
 
         .kpi { background:#1c222b; border:1px solid #333c49; border-top:3px solid var(--cor); border-radius:12px; padding:.7rem .9rem; box-shadow:0 4px 14px rgba(0,0,0,.2); }
         .kpi .kpi-v { font-size:1.9rem; font-weight:800; line-height:1.1; color:#fff; }
@@ -1090,7 +1127,8 @@ def renderizar_estilo() -> None:
 
         @media (max-width: 760px) {
             .block-container { padding: .9rem .75rem; }
-            .pdea-pills { margin-left:0; }
+            .pdea-pills { margin-left:0; width:100%; }
+            .pill { flex:1 1 9rem; }
             .dlg-resumo { grid-template-columns:repeat(2,1fr); }
         }
         .dlg-resumo { grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)) !important; }
@@ -1105,7 +1143,7 @@ def renderizar_estilo() -> None:
         .rodape-sec { margin-top:.4rem; color:#8895a7; font-size:.78rem; }
         @media (max-width: 760px) {
             .kpi .kpi-v { font-size:1.45rem; }
-            .logo-topo { height:48px; }
+            .logo-cartao img.logo-topo { height:44px; }
         }
         </style>
         """,
@@ -1451,12 +1489,18 @@ def main() -> None:
     # ------------------------------------------------------------------ cabeçalho, indicadores e destaque
     minutos = _minutos_desde(dados)
     sufixo_hora = " · agora" if deslocamento == 0 else f" · +{deslocamento} h"
+    def _pilula(rotulo: str, valor_html: str, dica: str = "") -> str:
+        titulo = f" title='{escape(dica)}'" if dica else ""
+        return f"<div class='pill'{titulo}><span class='pl'>{escape(rotulo)}</span><b>{valor_html}</b></div>"
+
     pilulas = [
-        f"<span class='pill'>Modelo · <b>{escape(fonte)}</b></span>",
-        f"<span class='pill'>Hora exibida · <b>{escape(rotulo_hora)}{sufixo_hora}</b></span>",
+        _pilula("Modelo", escape(fonte)),
+        _pilula("Hora exibida", f"{escape(rotulo_hora)}{escape(sufixo_hora)}"),
     ]
     if minutos is not None:
-        pilulas.append(f"<span class='pill'>Dados · <b>há {minutos} min</b></span>")
+        estado_dados = "ponto" if minutos <= 15 else "ponto velho"
+        pilulas.append(_pilula("Dados", f"<span class='{estado_dados}'></span>há {minutos} min",
+                               "Idade da previsão do modelo (atualiza a cada 10 min)"))
     # HTML numa única linha por bloco: linhas em branco quebrariam o parser de Markdown.
     cabecalho_html = (
         f"<div class='pdea-cabecalho'><div class='logo-cartao'>{_html_logo('logo-topo')}</div>"
