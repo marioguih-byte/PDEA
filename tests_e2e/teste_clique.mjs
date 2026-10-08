@@ -37,7 +37,14 @@ const dialogoAberto = async (titulo) => p.evaluate(t => document.body.innerText.
 async function esperarDialogo(titulo, ate = 25) { for (let i = 0; i < ate; i++) { if (await dialogoAberto(titulo)) return true; await dorme(1000); } return false; }
 async function clicarCapital(frame, texto) {
   for (const pin of await frame.$$(".pdea-pin")) {
-    if ((await pin.evaluate(e => e.textContent)) === texto) { await pin.click(); return true; }
+    if ((await pin.evaluate(e => e.textContent)) === texto) {
+      // rola a bolinha para o centro da tela e espera a rolagem terminar ANTES de clicar: o clique automático do Puppeteer calcula a
+      // posição durante a rolagem e pode errar o alvo (o que, num teste, parece "o painel não abriu")
+      await pin.evaluate(e => e.scrollIntoView({block: "center"}));
+      await dorme(800);
+      await pin.click();
+      return true;
+    }
   }
   return false;
 }

@@ -340,7 +340,7 @@ def testes_sem_cadastro() -> None:
         assert not any("Versão" in str(c.value) for c in at.caption)  # o carimbo saiu da tela (fica só no texto de ajuda dos créditos)
         # cabeçalho: logo com altura própria (a regra genérica da caixa do logo não pode anulá-la) e informações em cartões rótulo/valor
         assert "img.logo-topo { height:54px" in md and "img.logo-lateral" in md and ".logo-cartao img.logo-topo { height:44px" in md
-        assert "<div class='pdea-cabecalho'>" in md and "<span class='pl'>Modelo</span>" in md and "<span class='pl'>Hora exibida</span>" in md
+        assert "<div class='pdea-cabecalho'>" in md and "<span class='pl'>Fonte</span>" in md and "<span class='pl'>Hora exibida</span>" in md
         assert "<span class='pl'>Dados</span>" in md and "class='ponto" in md and "@keyframes pdea-pulso" in md
     finally:
         modelos.buscar_modelo = original
@@ -652,6 +652,111 @@ def testes_mapa_estavel() -> None:
     print("Teste do mapa estável entre execuções (clique na bolinha preservado): OK")
 
 
+def testes_concorrencia() -> None:
+    """Vários visitantes ao mesmo tempo: gravação do histórico atômica (threads e processos) e botão "Atualizar" limitado."""
+    import subprocess
+    import sys as _sys
+    import threading
+    import time as _time
+
+    import historico
+    import modelos
+    from datetime import datetime as _dt
+
+    def dados_hora() -> dict:
+        d = _dados_sinteticos()
+        d["_obtido_em"] = _dt.now(modelos.TZ_BRASILIA).isoformat()
+        return d
+
+    # 1) sessões (threads) simultâneas na virada da hora: UMA grava, as outras só percebem que já existe; nenhuma dá erro
+    for n in (2, 8, 16):
+        with tempfile.TemporaryDirectory() as p:
+            caminho = Path(p) / "h.db"
+            barreira, resultados = threading.Barrier(n), []
+
+            def sessao() -> None:
+                barreira.wait()
+                try:
+                    resultados.append(historico.registrar(dados_hora(), "best_match", caminho))
+                except Exception as exc:  # noqa: BLE001
+                    resultados.append(f"{type(exc).__name__}: {exc}")
+            ts = [threading.Thread(target=sessao) for _ in range(n)]
+            [t.start() for t in ts]
+            [t.join() for t in ts]
+            assert resultados.count(True) == 1 and resultados.count(False) == n - 1, resultados  # sem IntegrityError
+            assert historico.status(caminho)["execucoes"] == 1
+
+    # 2) processos diferentes (por exemplo, o painel e a rotina agendada `historico.py registrar`) gravando ao mesmo tempo
+    with tempfile.TemporaryDirectory() as p:
+        caminho = Path(p) / "h.db"
+        raiz = Path(__file__).resolve().parent
+        alvo = _time.time() + 4.0
+        codigo = (
+            "import sys, time, json\nsys.path.insert(0, %r)\nimport historico, modelos, validar\nfrom datetime import datetime\n"
+            "d = validar._dados_sinteticos(); d['_obtido_em'] = datetime.now(modelos.TZ_BRASILIA).isoformat()\n"
+            "time.sleep(max(0, %r - time.time()))\n"
+            "from pathlib import Path\n"
+            "try:\n    print(historico.registrar(d, 'best_match', Path(%r)))\nexcept Exception as e:\n    print('ERRO', type(e).__name__)\n"
+        ) % (str(raiz), alvo, str(caminho))
+        procs = [subprocess.Popen([_sys.executable, "-c", codigo], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, cwd=raiz) for _ in range(4)]
+        saidas = [pr.communicate(timeout=60)[0].strip().splitlines()[-1] for pr in procs]
+        assert saidas.count("True") == 1 and saidas.count("False") == 3, saidas  # exatamente um processo grava; nenhum erro
+        assert historico.status(caminho)["execucoes"] == 1
+
+    # 3) o botão "Atualizar dados" limpa o cache de TODOS: no máximo uma vez a cada 2 min
+    import app as pdea_app
+
+    estado = pdea_app._estado_dados()
+    estado.pop("ultima_limpeza", None)
+    assert pdea_app.limpar_cache_dados() is True and pdea_app.limpar_cache_dados() is False  # o segundo clique (ou outro visitante) é adiado
+    estado["ultima_limpeza"] = _time.time() - pdea_app.INTERVALO_MIN_ATUALIZAR_S - 1
+    assert pdea_app.limpar_cache_dados() is True  # passado o intervalo, volta a valer
+    print("Testes de concorrência (histórico atômico entre threads e processos, botão Atualizar limitado): OK")
+
+
+def testes_fonte_open_meteo() -> None:
+    """Sem escolha de modelo: só o Best Match, exibido como "Open-Meteo API", com a explicação no fim da página."""
+    import os
+
+    import modelos
+    import streamlit_folium
+    from datetime import datetime as _dt
+    from streamlit.testing.v1 import AppTest
+
+    original = (modelos.buscar_modelo, streamlit_folium.st_folium)
+    antigo = os.environ.get("PDEA_HISTORICO")
+    try:
+        os.environ["PDEA_HISTORICO"] = "desligado"
+        modelos.buscar_modelo = lambda *a, **k: {**_dados_sinteticos(), "_obtido_em": _dt.now(modelos.TZ_BRASILIA).isoformat(), "_extras": True, "_erro_extras": None}
+        streamlit_folium.st_folium = lambda mapa, **k: {"last_object_clicked_tooltip": "Fortaleza"}  # simula o clique numa bolinha
+        at = AppTest.from_file("app.py", default_timeout=90).run()
+        assert not at.exception, [e.value for e in at.exception][:2]
+        # nenhum seletor de modelo
+        assert not any("odelo" in str(sb.label) for sb in at.selectbox), [sb.label for sb in at.selectbox]
+        assert [sb.label for sb in at.selectbox] == ["Estilo do mapa"]
+        textos = " ".join([str(m.value) for m in at.markdown] + [str(c.value) for c in at.caption] + [str(b.label) for b in at.button]
+                          + [str(e.label) for e in at.expander] + [str(t.value) for t in at.text])
+        assert "Fonte: Open-Meteo API · Atualização automática" in textos       # barra lateral
+        assert "<span class='pl'>Fonte</span><b>Open-Meteo API</b>" in textos      # cabeçalho
+        assert "Best Match (automático)" not in textos and "Modelo numérico" not in textos and "todos os modelos" not in textos
+        assert any(b.label == "Atualizar dados" for b in at.button)
+        assert any("Fonte dos dados: Open-Meteo API" in str(e.label) for e in at.expander)
+        # a explicação no fim da página
+        explicacao = " ".join(str(m.value) for m in at.markdown if "Best Match" in str(m.value) and "Qual modelo" in str(m.value))
+        assert all(x in explicacao for x in ("O que é.", "Qual modelo.", "O que é usado.", "Atualização.", "Limites.", "não comercial", "10.000", "CAPE", "27 capitais", "3 dias"))
+        # o painel da capital também mostra a fonte, e a legenda do mapa
+        assert any("Fonte: Open-Meteo API" in str(c.value) for c in at.caption)
+        import app as pdea_app
+        assert pdea_app.NOME_FONTE == "Open-Meteo API" and pdea_app.MODELO_PADRAO == "best_match" and pdea_app.MODELO_PADRAO in modelos.MODELOS
+    finally:
+        modelos.buscar_modelo, streamlit_folium.st_folium = original
+        if antigo is None:
+            os.environ.pop("PDEA_HISTORICO", None)
+        else:
+            os.environ["PDEA_HISTORICO"] = antigo
+    print("Teste da fonte única (Open-Meteo API, sem seletor de modelo, explicação no fim): OK")
+
+
 def testes_ampliados() -> None:
     # Heurística ampliada: pontos limitados, sem efeito com peso 0 ou sem dados extras.
     assert ajuste_extras(None) == 0 and ajuste_extras({}) == 0
@@ -873,6 +978,8 @@ if __name__ == "__main__":
     testes_legenda_retratil()
     testes_isolamento_netcdf()
     testes_mapa_estavel()
+    testes_concorrencia()
+    testes_fonte_open_meteo()
     testes_ampliados()
     if "--online" in sys.argv:
         from modelos import ErroBuscaModelo

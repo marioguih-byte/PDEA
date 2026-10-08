@@ -35,7 +35,10 @@ RESPONSAVEIS = (
     ("Mário Henrique", "mario.vanderlei@icat.ufal.br"),
     ("Mayara Christine", "mayara.lins@icat.ufal.br"),
 )
-VERSAO_APP = "2026-10-08i"  # aparece só ao passar o mouse nos créditos da barra lateral
+# Fonte dos dados: o painel usa um só "modelo", o Best Match da API do Open-Meteo, exibido como "Open-Meteo API".
+MODELO_PADRAO = "best_match"
+NOME_FONTE = "Open-Meteo API"
+VERSAO_APP = "2026-10-08k"  # aparece só ao passar o mouse nos créditos da barra lateral
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -64,7 +67,7 @@ try:
         series_por_unidade,
     )
     from app_camadas import GOES_ATRIBUICAO, GOES_ZOOM_NATIVO, url_goes
-    from modelos import MODELOS, TZ_BRASILIA, ErroBuscaModelo, buscar_modelo, horario_local
+    from modelos import HORIZONTE_DIAS, MODELOS, TZ_BRASILIA, ErroBuscaModelo, buscar_modelo, horario_local
     from relatorio import gerar_pdf, gerar_png
     from risco_raio import (
         CORES_NIVEL,
@@ -124,9 +127,20 @@ def _estado_dados() -> dict[str, dict[str, Any]]:
     return {"valido": {}, "falha": {}}
 
 
-def limpar_cache_dados() -> None:
+INTERVALO_MIN_ATUALIZAR_S = 120  # o cache de previsão é compartilhado por todos os visitantes
+
+
+def limpar_cache_dados() -> bool:
+    """Limpa o cache de previsão (de TODOS os visitantes). No máximo uma vez a cada 2 min, para um clique repetido, ou vários
+    visitantes clicando, não dispararem consultas em série à API de previsão. Devolve ``False`` se foi adiado."""
+    estado = _estado_dados()
+    agora = time.time()
+    if agora - estado.get("ultima_limpeza", 0.0) < INTERVALO_MIN_ATUALIZAR_S:
+        return False
+    estado["ultima_limpeza"] = agora
     _buscar_modelo_cache.clear()
-    _estado_dados()["falha"].clear()
+    estado["falha"].clear()
+    return True
 
 
 def carregar_dados(modelo_id: str) -> tuple[dict[str, Any], Optional[str]]:
@@ -1009,8 +1023,7 @@ def abrir_detalhamento(nome: str, ctx: dict[str, Any]) -> None:
     @st.dialog(nome, width="large", dismissible=False)
     def janela() -> None:
         cores = ctx["cores"]
-        modelo_nome, origem, frequencia = MODELOS[ctx["modelo_id"]]
-        st.caption(f"Modelo: {modelo_nome} · Origem: {origem} · Atualização: {frequencia}")
+        st.caption(f"Fonte: {ctx['fonte']} · previsão horária · atualização automática")
 
         linha_t = ctx["tabela"].loc[ctx["tabela"]["Capital"] == nome]
         if linha_t.empty or not ctx["series"][nome]["rel"]:
@@ -1408,15 +1421,11 @@ def main() -> None:
         )
 
         with st.expander("Dados", expanded=True):
-            modelo_id = st.selectbox(
-                "Modelo numérico",
-                options=list(MODELOS),
-                format_func=lambda chave: MODELOS[chave][0],
-            )
-            nome_modelo, origem, frequencia = MODELOS[modelo_id]
-            st.caption(f"Origem: {origem} · Atualiza: {frequencia}")
-            if st.button("Atualizar dados de todos os modelos", width="stretch"):
-                limpar_cache_dados()
+            modelo_id = MODELO_PADRAO  # sem escolha de modelo: o painel usa só o Best Match do Open-Meteo
+            st.caption(f"Fonte: {NOME_FONTE} · Atualização automática (a cada 10 min)")
+            if st.button("Atualizar dados", width="stretch"):
+                if not limpar_cache_dados():
+                    st.toast("Os dados já foram atualizados há menos de 2 min (por você ou por outro visitante). Tente de novo em instantes.")
                 st.session_state["ultimo_clique_mapa"] = None
                 recriar_mapa()
 
@@ -1453,7 +1462,7 @@ def main() -> None:
 
     # ------------------------------------------------------------------ dados
     try:
-        with st.spinner(f"Buscando {nome_modelo} para {len(ESTACOES)} capitais..."):
+        with st.spinner(f"Buscando a previsão ({NOME_FONTE}) para {len(ESTACOES)} capitais..."):
             dados, aviso = carregar_dados(modelo_id)
     except ErroBuscaModelo as erro:
         st.error(f"Falha ao buscar o modelo selecionado: {erro}")
@@ -1471,11 +1480,11 @@ def main() -> None:
     extras_disponiveis = bool(dados.get("_extras"))
     if not extras_disponiveis:
         st.sidebar.warning(
-            "Sem dados de precipitação deste modelo: o escore usa CAPE × chuva e, sem chuva, não pode ser calculado "
-            f"({dados.get('_erro_extras') or 'sem detalhe'}). Tente outro modelo."
+            f"Sem dados de precipitação da {NOME_FONTE}: o escore usa CAPE × chuva e, sem chuva, não pode ser calculado "
+            f"({dados.get('_erro_extras') or 'sem detalhe'}). Tente atualizar os dados em instantes."
         )
 
-    fonte = nome_modelo
+    fonte = NOME_FONTE
 
     # ------------------------------------------------------------------ áreas da página (ordem visual)
     area_cabecalho = st.container()
@@ -1554,7 +1563,7 @@ def main() -> None:
         return f"<div class='pill'{titulo}><span class='pl'>{escape(rotulo)}</span><b>{valor_html}</b></div>"
 
     pilulas = [
-        _pilula("Modelo", escape(fonte)),
+        _pilula("Fonte", escape(fonte)),
         _pilula("Hora exibida", f"{escape(rotulo_hora)}{escape(sufixo_hora)}"),
     ]
     if minutos is not None:
@@ -1646,7 +1655,7 @@ def main() -> None:
             c1, c2 = st.columns(2)
             c1.download_button(
                 "Baixar tabela atual (CSV)",
-                _csv_br(tabela.drop(columns=["Latitude", "Longitude"]).assign(**{"Horário": rotulo_hora, "Modelo": fonte})),
+                _csv_br(tabela.drop(columns=["Latitude", "Longitude"]).assign(**{"Horário": rotulo_hora, "Fonte": fonte})),
                 file_name=f"pdea_tabela_{carimbo}.csv",
                 mime="text/csv",
                 on_click="ignore",
@@ -1664,7 +1673,7 @@ def main() -> None:
             st.markdown("<div class='rodape-sec'>Mapa estático e relatório (mapa + ranking de todas as capitais):</div>", unsafe_allow_html=True)
             if st.button("Gerar mapa PNG e relatório PDF", width="stretch"):
                 titulo = "PDEA — Risco de raios"
-                subtitulo = f"{rotulo_hora} · modelo: {fonte} · gerado em {datetime.now(TZ_BRASILIA):%d/%m/%Y %H:%M}"
+                subtitulo = f"{rotulo_hora} · fonte: {fonte} · gerado em {datetime.now(TZ_BRASILIA):%d/%m/%Y %H:%M}"
                 with st.spinner("Gerando arquivos..."):
                     st.session_state["relatorio"] = {
                         "png": gerar_png(tabela, titulo, subtitulo),
@@ -1698,6 +1707,24 @@ def main() -> None:
             "sistemas de detecção de descargas atmosféricas. Em caso de trovoada, procure abrigo em local fechado."
         )
         st.caption(f"Última renderização local: {datetime.now(TZ_BRASILIA).strftime('%d/%m/%Y %H:%M:%S')} (America/Sao_Paulo).")
+
+    with st.expander(f"Fonte dos dados: {NOME_FONTE}"):
+        st.markdown(
+            f"**O que é.** A previsão vem da **{NOME_FONTE}** ([open-meteo.com](https://open-meteo.com/en/docs)), uma API aberta que reúne, em "
+            "um só serviço, modelos numéricos de vários serviços meteorológicos nacionais (como ECMWF, NOAA, DWD, Météo-France e JMA).\n\n"
+            "**Qual modelo.** O painel usa a opção *Best Match*, o padrão da API: para cada local, o Open-Meteo escolhe e combina os "
+            "modelos mais adequados, em geral os de maior resolução disponíveis, e pode usar modelos diferentes para variáveis "
+            "diferentes. Por isso o painel não mostra, nem escolhe, qual modelo gerou cada valor. A resolução vai de 1 a 2 km "
+            "(modelos regionais, onde existem) a 9 a 11 km (modelos globais), segundo o Open-Meteo.\n\n"
+            f"**O que é usado.** Valores horários, para as {len(ESTACOES)} capitais e os próximos {HORIZONTE_DIAS} dias (a partir de 00:00 de hoje), de "
+            "CAPE, índice de elevação (LI), inibição convectiva (CIN), precipitação, rajada de vento, altura do nível de 0 °C e temperatura "
+            "em 850 e 500 hPa. O score usa o produto CAPE × precipitação (veja *Como interpretar o painel*).\n\n"
+            "**Atualização.** O painel consulta a API no máximo a cada 10 minutos, e a consulta é compartilhada por todos os visitantes. "
+            "Os modelos se atualizam a cada poucas horas, então *Dados · há N min* mostra a idade da consulta, e não a hora em que o "
+            "modelo rodou. O botão *Atualizar dados* força uma nova consulta (no máximo uma a cada 2 min).\n\n"
+            "**Limites.** É uma previsão de modelo, com incerteza que cresce com o prazo; o painel não substitui alertas oficiais. "
+            "A API gratuita é de uso **não comercial** (até 10.000 chamadas por dia)."
+        )
 
     if glm:
         canal_glm()  # entrega os raios novos ao mapa a cada coleta (5 min), sem recarregar o mapa nem a página

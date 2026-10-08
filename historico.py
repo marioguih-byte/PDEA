@@ -25,6 +25,7 @@ import argparse
 import os
 import sqlite3
 import sys
+import threading
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -80,14 +81,27 @@ def _execucao_de(dados: dict[str, Any]) -> tuple[str, str]:
     return obtido.replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M"), obtido.isoformat(timespec="seconds")
 
 
+_FEITOS: set[tuple[str, str, str]] = set()  # (arquivo, modelo, execução) já gravados por este processo
+_TRAVA_REGISTRO = threading.Lock()
+
+
 def registrar(dados: dict[str, Any], modelo_id: str, caminho: Optional[Path] = None) -> bool:
-    """Grava a execução se ainda não existe (uma por modelo e hora cheia). Devolve ``True`` se gravou."""
+    """Grava a execução se ainda não existe (uma por modelo e hora cheia). Devolve ``True`` se gravou.
+
+    É chamada a cada execução do painel por CADA visitante (cada sessão do Streamlit é uma thread do mesmo processo). Por isso:
+    só a primeira sessão da hora consulta o banco (``_FEITOS``); sessões simultâneas se revezam (``_TRAVA_REGISTRO``); e a gravação
+    é atômica (``INSERT OR IGNORE`` na tabela de execuções, na mesma transação), também entre processos. Antes, sessões simultâneas
+    na virada da hora disputavam a gravação e as perdedoras mostravam "Histórico indisponível: UNIQUE constraint failed".
+    """
     caminho = caminho or caminho_do_historico()
     if caminho is None:
         return False
     execucao, obtido_em = _execucao_de(dados)
-    with closing(_conectar(caminho)) as conexao:
-        if conexao.execute("SELECT 1 FROM execucoes WHERE modelo=? AND execucao=?", (modelo_id, execucao)).fetchone():
+    chave = (str(caminho), modelo_id, execucao)
+    if chave in _FEITOS:
+        return False
+    with _TRAVA_REGISTRO:
+        if chave in _FEITOS:
             return False
         linhas = []
         for estacao in ESTACOES:
@@ -102,10 +116,15 @@ def registrar(dados: dict[str, Any], modelo_id: str, caminho: Optional[Path] = N
                     (modelo_id, execucao, estacao["nome"], tempos[i], i - inicio,
                      v("cape"), v("li"), v("cin"), v("precip"), v("rajada"), v("nivel0"), v("t850"), v("t500"))
                 )
-        with conexao:  # transação única: ou grava tudo ou nada
-            conexao.executemany("INSERT OR IGNORE INTO previsoes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", linhas)
-            conexao.execute("INSERT INTO execucoes VALUES (?,?,?)", (modelo_id, execucao, obtido_em))
-    return True
+        with closing(_conectar(caminho)) as conexao:
+            with conexao:  # transação única: ou grava tudo ou nada
+                criou = conexao.execute("INSERT OR IGNORE INTO execucoes VALUES (?,?,?)", (modelo_id, execucao, obtido_em)).rowcount > 0
+                if criou:
+                    conexao.executemany("INSERT OR IGNORE INTO previsoes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", linhas)
+        _FEITOS.add(chave)
+        if len(_FEITOS) > 2000:  # só cresce algumas dezenas por dia; limita por segurança
+            _FEITOS.clear()
+        return criou
 
 
 def status(caminho: Optional[Path] = None) -> dict[str, Any]:

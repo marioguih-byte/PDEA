@@ -76,7 +76,7 @@ python validar.py --online --modelos # idem para os 12 modelos: mostra quais dev
 
 - Escore = função monótona de `CAPE × chuva` (ver **Método**). Sem chuva prevista ou sem CAPE, o escore é zero; sem dado de precipitação do modelo, a capital aparece como "Sem dados".
 - O escore mede **potencial**, e não detecta descargas. Os níveis são provisórios até a calibração com o GLM (`metodologia/`).
-- O Open-Meteo combina modelos globais; use o seletor de modelo para comparar e avaliar a incerteza.
+- O painel usa **um só modelo**: o *Best Match* da API do Open-Meteo, exibido como "Open-Meteo API" (não há seletor de modelo; a explicação está no bloco *Fonte dos dados* no fim da página). Para comparar modelos, use `python validar.py --online --modelos` ou `alertas.py --modelo ...`, que seguem aceitando os 12 modelos.
 
 ## Manter o app acordado (Streamlit Community Cloud)
 
@@ -105,7 +105,7 @@ Limites: é um **contorno** de uma regra do plano gratuito, não um recurso gara
 
 ## Como confirmar a versão no ar
 
-A barra lateral não tem mais o título "Painel meteorológico": entre a logo e o bloco *Dados* fica o cartão de créditos, centralizado e com a mesma faixa de cores do cabeçalho: "ELABORADO POR", seguido de cada responsável com o nome em destaque e o e-mail (link `mailto:`) logo abaixo. Os nomes ficam na lista `RESPONSAVEIS` do `app.py`. O número da versão fica só no texto de ajuda: passe o mouse sobre os créditos e aparece "Versão 2026-10-08i". Se não for esse, o que está rodando é uma cópia antiga: envie **todos** os arquivos ao GitHub (inclusive `glm_ao_vivo.py`, `assets/`, `static/`, `requirements.txt` e `.streamlit/config.toml`), com o `app.py` na **raiz** do repositório, e use *Manage app > Reboot app* no Streamlit.
+A barra lateral não tem mais o título "Painel meteorológico": entre a logo e o bloco *Dados* fica o cartão de créditos, centralizado e com a mesma faixa de cores do cabeçalho: "ELABORADO POR", seguido de cada responsável com o nome em destaque e o e-mail (link `mailto:`) logo abaixo. Os nomes ficam na lista `RESPONSAVEIS` do `app.py`. O número da versão fica só no texto de ajuda: passe o mouse sobre os créditos e aparece "Versão 2026-10-08k". Se não for esse, o que está rodando é uma cópia antiga: envie **todos** os arquivos ao GitHub (inclusive `glm_ao_vivo.py`, `assets/`, `static/`, `requirements.txt` e `.streamlit/config.toml`), com o `app.py` na **raiz** do repositório, e use *Manage app > Reboot app* no Streamlit.
 
 ## Raios em tempo real (GLM): detalhes
 
@@ -121,6 +121,14 @@ A barra lateral não tem mais o título "Painel meteorológico": entre a logo e 
 ## Como confirmar a versão no ar
 
 A barra lateral mostra "Versão 2026-10-08b · raios GLM 20 min ... (sem cadastro de e-mail)". Se esse texto não aparece, o que está rodando é uma cópia antiga do app: envie **todos** os arquivos ao GitHub (inclusive `glm_ao_vivo.py`, `assets/`, `static/`, `requirements.txt` e `.streamlit/config.toml`), com o `app.py` na **raiz** do repositório e use *Manage app > Reboot app* no Streamlit.
+
+## Vários visitantes ao mesmo tempo
+
+**O que é compartilhado (uma vez por servidor, não por visitante):** o coletor dos raios do GLM (uma thread, consulta o S3 a cada 5 min), o cache da previsão (10 min; pedidos simultâneos ao mesmo modelo viram **uma** consulta à API: testado com 6 sessões, 1 consulta) e o histórico em SQLite (gravação atômica). **O que é por visitante:** a sessão (seleções, capital aberta), a execução do script e o mapa (HTML de cerca de 355 KB). Um visitante não afeta o que outro está vendo.
+
+**Custo medido** (máquina de 1 CPU, dados simulados): servidor em repouso ~58 MB; ~230 MB com o primeiro visitante; **~9 MB por visitante adicional**; ~0,9 s de CPU para abrir o painel, ~0,45 s por interação (clique, filtro) e ~150 ms para montar o mapa. Como o Streamlit roda todas as sessões em um processo, o limite prático é a CPU: uma CPU atende algumas dezenas de visitantes ativos ao mesmo tempo. Os limites de CPU e memória do plano gratuito do Streamlit Cloud não foram verificados.
+
+**Cuidados já tomados:** (1) o histórico gravava com disputa na virada da hora (uma sessão gravava e as outras mostravam "Histórico indisponível: UNIQUE constraint failed"); agora a gravação é atômica entre threads e processos e só a primeira sessão da hora consulta o banco; (2) o botão *Atualizar dados de todos os modelos* limpa o cache de **todos** os visitantes e agora só vale uma vez a cada 2 min; (3) uma falha grave da biblioteca NetCDF derrubaria o processo de todos, por isso os arquivos do GLM são lidos em processo filho; (4) o HTML do mapa é estável entre execuções (senão o clique de cada visitante se perde). A previsão usa a API gratuita do Open-Meteo, de uso **não comercial**: se o painel passar a ter uso intenso, considere um plano pago ou outra hospedagem.
 
 ## Histórico
 
