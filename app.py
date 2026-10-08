@@ -27,6 +27,11 @@ from streamlit_folium import st_folium
 
 import cadastro
 
+# Carimbo de versão (aparece na tela de cadastro e na barra lateral): ajuda a conferir qual cópia do app está no ar.
+# Alcance ao redor das capitais (km, cor): os mesmos raios usados na verificação contra o GLM.
+ALCANCES_KM = ((30, "#e11d1d"), (50, "#ff8a00"), (100, "#ffd400"))  # vermelho, laranja, amarelo
+VERSAO_APP = "2026-10-08 · raios GLM 20 min (vermelho, laranja, amarelo, verde) + alcance 30/50/100 km + cadastro de e-mail"
+
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
 except Exception:  # noqa: BLE001 - sem o módulo/dependência, o painel só esconde a opção
@@ -447,13 +452,17 @@ class AjusteBrasil(MacroElement):
         self.limites = json.dumps(limites)
 
 
-def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: bool = False, glm: bool = False) -> str:
+def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: bool = False, glm: bool = False, alcance: bool = False) -> str:
     itens = "".join(
         f"<div class='rl-item'><span class='rl-dot' style='background:{cores[nivel]}'></span>{nivel}</div>"
         for _, nivel, _ in NIVEIS_RISCO[::-1]
     )
     if goes:
         itens += "<div class='rl-sub' style='margin:4px 0 2px'>☁ Nuvens: GOES-East IR (cores quentes/frias = topos mais altos)</div>"
+    if alcance:
+        itens += "<div class='rl-sub' style='margin:6px 0 2px'>&#9711; Alcance ao redor da capital:</div>" + "".join(
+            f"<div class='rl-item'><span class='rl-anel' style='border-color:{cor_anel}'></span>{km} km</div>" for km, cor_anel in ALCANCES_KM
+        )
     if glm:
         itens += (
             "<div class='rl-sub' style='margin:6px 0 2px'>&#9889; Raios observados (GLM), idade:</div>"
@@ -481,6 +490,7 @@ def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: boo
       .pdea-legenda .rl-titulo {{ font-weight:700; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
         color:#52606d; margin-bottom:4px; }}
       .pdea-legenda .rl-sub {{ color:#7b8794; font-size:10.5px; margin:-2px 0 4px; }}
+      .rl-anel {{ width:11px; height:11px; border-radius:50%; border:2.5px solid; box-sizing:border-box; margin:0 0; }}
       .rl-raio {{ width:9px; height:9px; border-radius:50%; border:1px solid rgba(15,23,42,.55); margin:0 1px; }}
       .pdea-glm-chip {{ background:rgba(255,255,255,.94); border:1px solid rgba(15,23,42,.12); border-radius:10px; padding:6px 10px;
         font:12px 'Segoe UI', Arial, sans-serif; color:#1f2933; box-shadow:0 4px 14px rgba(15,23,42,.18); line-height:1.35; }}
@@ -534,6 +544,7 @@ def criar_mapa(
     goes: bool = False,
     goes_opacidade: float = 0.6,
     glm: bool = False,
+    alcance: bool = False,
 ) -> folium.Map:
     """Cria o mapa Folium travado no Brasil, com marcadores clicáveis."""
     configuracao = TILES[estilo]
@@ -620,12 +631,24 @@ def criar_mapa(
             z_index_offset=0 if pd.isna(score) else int(score * 10),
         ).add_to(mapa)
 
+    if alcance:
+        # Anéis de 30, 50 e 100 km ao redor de cada capital (vermelho, laranja e amarelo). Só contorno, sem capturar cliques.
+        grupo_alcance = folium.FeatureGroup(name="Alcance (30, 50 e 100 km)", control=False)
+        for _, linha in tabela.iterrows():
+            for km, cor_anel in reversed(ALCANCES_KM):  # do maior para o menor: o anel de 30 km fica por cima
+                anel = folium.Circle(
+                    location=[linha["Latitude"], linha["Longitude"]], radius=km * 1000, color=cor_anel, weight=2,
+                    opacity=0.9, fill=True, fill_color=cor_anel, fill_opacity=0.04,
+                )
+                anel.options["interactive"] = False  # o folium descarta esse argumento no construtor; sem isso o anel captura o mouse
+                anel.add_to(grupo_alcance)
+        grupo_alcance.add_to(mapa)
     if glm:
         # Raios do GLM: desenhados no navegador e atualizados sozinhos (sem recarregar a página nem acionar o Streamlit).
         inicial = glm_ao_vivo.dados_atuais(aguardar_s=12) if glm_ao_vivo else None  # no 1º acesso, espera a 1ª coleta (raios de antes da abertura)
         mapa.add_child(RaiosGLM(inicial, caminho_base=st.get_option("server.baseUrlPath") or ""))
     mapa.add_child(AjusteBrasil(LIMITES_BRASIL))
-    mapa.get_root().html.add_child(Element(_legenda_mapa(cores, rotulo_hora, fonte, goes, glm)))
+    mapa.get_root().html.add_child(Element(_legenda_mapa(cores, rotulo_hora, fonte, goes, glm, alcance)))
     return mapa
 
 
@@ -1159,6 +1182,7 @@ def secao_mapa(tabela: pd.DataFrame, ctx: dict[str, Any], estilo: str, mostrar_s
         ctx["goes"],
         ctx["goes_opacidade"],
         ctx["glm"],
+        ctx["alcance"],
     )
     resultado_mapa = st_folium(
         mapa,
@@ -1201,6 +1225,7 @@ def portao_de_entrada() -> None:
     with centro:
         st.markdown(f"<div class='logo-cartao'>{_html_logo('logo-entrada')}</div>", unsafe_allow_html=True)
         st.subheader("Bem-vindo ao PDEA")
+        st.caption(f"Versão {VERSAO_APP}")
         st.write("Informe seu e-mail para acessar o painel de previsão de descargas atmosféricas das capitais brasileiras.")
         with st.form("cadastro_email", clear_on_submit=False):
             email = st.text_input("Seu e-mail", placeholder="nome@exemplo.com", max_chars=254)
@@ -1249,6 +1274,7 @@ def main() -> None:
             unsafe_allow_html=True,
         )
         st.caption("PAINEL METEOROLÓGICO")
+        st.caption(f"Versão {VERSAO_APP}")
 
         with st.expander("Dados", expanded=True):
             modelo_id = st.selectbox(
@@ -1269,6 +1295,11 @@ def main() -> None:
             divisas = st.toggle("Divisas estaduais", value=True)
             goes = st.toggle("Topos de nuvem (GOES-East)", help="Infravermelho do GOES-East (NASA GIBS), atualizado a cada ~10 min com atraso de cerca de 30 min. Requer internet no navegador.")
             goes_opacidade = st.slider("Opacidade das nuvens", 0.2, 0.9, 0.6, step=0.05) if goes else 0.6
+            alcance = st.toggle(
+                "Alcance ao redor das capitais (30, 50 e 100 km)", value=True,
+                help="Anéis de 30 km (vermelho), 50 km (laranja) e 100 km (amarelo) em volta de cada capital: os mesmos raios usados "
+                     "para verificar o escore contra os raios observados pelo GLM.",
+            )
             glm = False
             if glm_ao_vivo is not None:
                 glm = st.toggle(
@@ -1355,6 +1386,7 @@ def main() -> None:
         "goes": goes,
         "goes_opacidade": goes_opacidade,
         "glm": glm,
+        "alcance": alcance,
         "extras": extras_disponiveis,
         "gate": gate,
         "regioes": regioes,

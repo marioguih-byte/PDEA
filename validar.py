@@ -422,6 +422,33 @@ def testes_cadastro() -> None:
     print("Testes do cadastro de e-mail (validação, consentimento, SMTP simulado, limite, falhas, tela): OK")
 
 
+def testes_mapa_alcance() -> None:
+    """Anéis de 30, 50 e 100 km ao redor de cada capital: vermelho, laranja e amarelo; sem capturar o mouse."""
+    import re
+
+    import app as pdea_app
+    import analise
+
+    dados = _dados_sinteticos()
+    for s in dados.values():
+        if isinstance(s, dict):
+            s["precip"] = [1.0] * len(s["tempos"])
+    tab = analise.consolidar(dados, analise.series_por_unidade(dados, _ParametrosRisco()), 0)
+
+    def mapa(alcance: bool) -> str:
+        return pdea_app.criar_mapa(tab, "OpenStreetMap", pdea_app.CORES_NIVEL, True, "12:00", "Best Match", True, False, 0.6, False, alcance).get_root().render()
+
+    h = mapa(True)
+    assert pdea_app.ALCANCES_KM == ((30, "#e11d1d"), (50, "#ff8a00"), (100, "#ffd400"))
+    assert len(re.findall(r"L\.circle\(", h)) == 3 * len(ESTACOES)
+    for km, cor in pdea_app.ALCANCES_KM:
+        blocos = [b for b in re.findall(r"L\.circle\(.*?\)\.addTo", h, flags=re.S) if re.search(r'"radius": %d\b' % (km * 1000), b)]
+        assert len(blocos) == len(ESTACOES) and all(f'"color": "{cor}"' in b and '"interactive": false' in b for b in blocos), km
+    assert all(x in h for x in ("Alcance ao redor da capital", "30 km", "50 km", "100 km"))
+    assert "L.circle(" not in mapa(False) and "Alcance ao redor da capital" not in mapa(False)
+    print("Testes do alcance de 30, 50 e 100 km (vermelho, laranja, amarelo): OK")
+
+
 def testes_ampliados() -> None:
     # Heurística ampliada: pontos limitados, sem efeito com peso 0 ou sem dados extras.
     assert ajuste_extras(None) == 0 and ajuste_extras({}) == 0
@@ -637,6 +664,7 @@ if __name__ == "__main__":
     testes_capexp()
     testes_glm_ao_vivo()
     testes_cadastro()
+    testes_mapa_alcance()
     testes_ampliados()
     if "--online" in sys.argv:
         from modelos import ErroBuscaModelo
