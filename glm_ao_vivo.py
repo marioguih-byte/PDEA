@@ -1,0 +1,227 @@
+"""Raios do GLM (GOES-East) quase em tempo real, atualizados a cada 5 minutos, sem recarregar a página.
+
+Como funciona
+-------------
+1. Uma thread em segundo plano (``AtualizadorGLM``) roda no servidor do painel. A cada 5 minutos ela lista no bucket público
+   da NOAA (Amazon S3) os arquivos GLM-L2-LCFA mais recentes (um arquivo a cada 20 s), baixa só os que ainda não leu,
+   guarda os flashes dos últimos 30 minutos e grava o resultado em ``static/glm_flashes.txt`` (JSON em texto) e, depois, o minúsculo ``static/glm_meta.txt`` (só o instante da coleta).
+2. O mapa (JavaScript, no navegador) busca esse arquivo de tempos em tempos e redesenha só a camada de raios, sem acionar o
+   Streamlit. O Streamlit serve a pasta ``static/`` quando ``server.enableStaticServing = true`` (já em ``.streamlit/config.toml``).
+3. O primeiro desenho usa o instantâneo em memória (``dados_atuais()``), embutido no próprio mapa.
+
+Formato do arquivo (JSON): ``{"gerado": <epoch s>, "janela_min": 30, "ultimo_arquivo": <epoch s>, "arquivos": N,
+"raios": [[lat, lon, idade_s], ...]}``, em que ``idade_s`` é a idade do flash no instante ``gerado``.
+
+Limites: o GLM mede a atividade elétrica total (intranuvem e nuvem-solo), tem eficiência de detecção que varia com a
+posição e o horário, e os arquivos chegam ao S3 com atraso de alguns minutos. É uma observação por satélite, não um alerta.
+Dependências: requests, numpy, netCDF4.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import threading
+import time
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+import numpy as np
+
+BUCKET = os.environ.get("PDEA_GLM_BUCKET", "noaa-goes19")  # GOES-East desde 07/04/2025
+JANELA_MIN = 30
+INTERVALO_S = 300
+MAX_RAIOS = 25000
+CAIXA_BRASIL = (-35.0, 7.0, -75.0, -32.0)  # lat_min, lat_max, lon_min, lon_max (com folga)
+ARQUIVO_PADRAO = Path(__file__).resolve().parent / "static" / "glm_flashes.txt"
+NS = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+PADRAO_NOME = re.compile(r"_s(\d{4})(\d{3})(\d{2})(\d{2})(\d{2})\d_")
+
+
+def inicio_do_arquivo(chave: str) -> Optional[datetime]:
+    """Início do arquivo (UTC) a partir de ``..._sAAAADDDHHMMSSt_...``."""
+    m = PADRAO_NOME.search(chave)
+    if not m:
+        return None
+    ano, doy, hh, mm, ss = (int(x) for x in m.groups())
+    return datetime(ano, 1, 1, tzinfo=timezone.utc) + timedelta(days=doy - 1, hours=hh, minutes=mm, seconds=ss)
+
+
+def listar_hora(cliente, hora: datetime, bucket: str = BUCKET) -> list[str]:
+    """Chaves .nc de uma hora UTC (ListObjectsV2 anônimo, com paginação)."""
+    prefixo = f"GLM-L2-LCFA/{hora.year}/{hora.timetuple().tm_yday:03d}/{hora.hour:02d}/"
+    chaves, token = [], None
+    while True:
+        params = {"list-type": "2", "prefix": prefixo}
+        if token:
+            params["continuation-token"] = token
+        r = cliente.get(f"https://{bucket}.s3.amazonaws.com/", params=params, timeout=30)
+        r.raise_for_status()
+        raiz = ET.fromstring(r.content)
+        chaves += [c.findtext("s3:Key", namespaces=NS) for c in raiz.findall("s3:Contents", NS)]
+        if raiz.findtext("s3:IsTruncated", namespaces=NS) == "true":
+            token = raiz.findtext("s3:NextContinuationToken", namespaces=NS)
+        else:
+            return [c for c in chaves if c and c.endswith(".nc")]
+
+
+_TRAVA_NETCDF = threading.Lock()  # a biblioteca NetCDF/HDF5 não é segura para uso paralelo
+
+
+def extrair_flashes(conteudo: bytes) -> np.ndarray:
+    """Matriz (n, 2) com [lat, lon] dos flashes do arquivo que caem na caixa do Brasil."""
+    import netCDF4
+
+    with netCDF4.Dataset("glm.nc", mode="r", memory=conteudo) as ds:
+        lat = np.ma.filled(ds.variables["flash_lat"][:], np.nan).astype(float)
+        lon = np.ma.filled(ds.variables["flash_lon"][:], np.nan).astype(float)
+    la0, la1, lo0, lo1 = CAIXA_BRASIL
+    ok = np.isfinite(lat) & np.isfinite(lon) & (lat >= la0) & (lat <= la1) & (lon >= lo0) & (lon <= lo1)
+    return np.column_stack([lat[ok], lon[ok]]) if ok.any() else np.empty((0, 2))
+
+
+class AtualizadorGLM:
+    """Mantém os flashes dos últimos ``janela_min`` minutos e grava o arquivo lido pelo mapa."""
+
+    def __init__(self, caminho: Path = ARQUIVO_PADRAO, janela_min: int = JANELA_MIN, intervalo_s: int = INTERVALO_S,
+                 cliente: Any = None, bucket: str = BUCKET, trabalhadores: int = 8) -> None:
+        self.caminho, self.janela_min, self.intervalo_s = Path(caminho), janela_min, intervalo_s
+        self.bucket, self.trabalhadores = bucket, trabalhadores
+        self._cliente = cliente
+        self._por_arquivo: dict[str, tuple[datetime, np.ndarray]] = {}
+        self._falhas: set[str] = set()
+        self._lock = threading.Lock()
+        self.ultimo: Optional[dict[str, Any]] = None
+        self.ultimo_erro: Optional[str] = None
+        self._thread: Optional[threading.Thread] = None
+
+    # -------------------------------------------------------------- coleta
+    def _cli(self):
+        if self._cliente is None:
+            import requests
+
+            self._cliente = requests.Session()
+        return self._cliente
+
+    def _baixar(self, chave: str) -> bytes:
+        r = self._cli().get(f"https://{self.bucket}.s3.amazonaws.com/{chave}", timeout=60)
+        r.raise_for_status()
+        return r.content
+
+    def atualizar(self, agora: Optional[datetime] = None) -> dict[str, Any]:
+        """Uma rodada: descobre os arquivos novos, baixa, descarta os antigos e devolve o instantâneo."""
+        agora = agora or datetime.now(timezone.utc)
+        corte = agora - timedelta(minutes=self.janela_min)
+        horas = {corte.replace(minute=0, second=0, microsecond=0), agora.replace(minute=0, second=0, microsecond=0)}
+        candidatos = []
+        for h in sorted(horas):
+            for chave in listar_hora(self._cli(), h, self.bucket):
+                t = inicio_do_arquivo(chave)
+                if t is not None and t >= corte and chave not in self._por_arquivo and chave not in self._falhas:
+                    candidatos.append((t, chave))
+        if candidatos:
+            # Download em paralelo (só rede). A leitura NetCDF/HDF5 é feita um arquivo por vez: a biblioteca não é
+            # segura para várias threads e derruba o processo (erro de barramento) se for chamada em paralelo.
+            with ThreadPoolExecutor(self.trabalhadores) as ex:
+                conteudos = list(ex.map(lambda tc: self._seguro(tc[1]), candidatos))
+            resultados = [self._ler(c) for c in conteudos]
+            with self._lock:
+                for (t, chave), arr in zip(candidatos, resultados):
+                    if arr is None:
+                        self._falhas.add(chave)  # não tenta de novo um arquivo que falhou (evita laço de erro)
+                    else:
+                        self._por_arquivo[chave] = (t, arr)
+        with self._lock:
+            self._por_arquivo = {k: v for k, v in self._por_arquivo.items() if v[0] >= corte}
+            self._falhas = {k for k in self._falhas if (inicio_do_arquivo(k) or agora) >= corte}
+            pares = sorted(self._por_arquivo.values(), key=lambda p: p[0])
+        raios: list[list] = []
+        for t, arr in pares:
+            idade = int((agora - t).total_seconds())
+            raios += [[round(float(la), 2), round(float(lo), 2), idade] for la, lo in arr]
+        if len(raios) > MAX_RAIOS:  # mantém os mais recentes
+            raios = sorted(raios, key=lambda r: r[2])[:MAX_RAIOS]
+        dados = {"gerado": int(agora.timestamp()), "janela_min": self.janela_min,
+                 "ultimo_arquivo": int(pares[-1][0].timestamp()) if pares else None, "arquivos": len(pares), "raios": raios}
+        self.ultimo = dados
+        return dados
+
+    def _seguro(self, chave: str):
+        try:
+            return self._baixar(chave)
+        except Exception:  # noqa: BLE001 - um arquivo ruim não derruba a rodada
+            return None
+
+    @staticmethod
+    def _ler(conteudo: Optional[bytes]):
+        if conteudo is None:
+            return None
+        try:
+            with _TRAVA_NETCDF:
+                return extrair_flashes(conteudo)
+        except Exception:  # noqa: BLE001 - arquivo corrompido: conta como falha
+            return None
+
+    # -------------------------------------------------------------- saída
+    def gravar(self, dados: dict[str, Any]) -> None:
+        """Escrita atômica: o navegador nunca lê um arquivo pela metade."""
+        self.caminho.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.caminho.with_suffix(".tmp")
+        tmp.write_text(json.dumps(dados, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, self.caminho)
+        # Arquivo minúsculo, gravado DEPOIS do principal: o navegador o consulta com frequência e só baixa o arquivo
+        # grande quando "gerado" mudar (o servidor do Streamlit não responde 304 à revalidação).
+        meta = self.caminho.with_name("glm_meta.txt")
+        tmp_meta = meta.with_suffix(".tmp")
+        tmp_meta.write_text(json.dumps({"gerado": dados["gerado"], "raios": len(dados["raios"])}, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp_meta, meta)
+
+    def rodada(self) -> None:
+        try:
+            self.gravar(self.atualizar())
+            self.ultimo_erro = None
+        except Exception as exc:  # noqa: BLE001 - mantém o último arquivo bom e tenta de novo no próximo ciclo
+            self.ultimo_erro = f"{type(exc).__name__}: {exc}"
+
+    def _laco(self) -> None:
+        while True:
+            self.rodada()
+            # alinha ao relógio: roda nos minutos 0, 5, 10... (mais 20 s, para o último arquivo do período já estar no S3)
+            espera = self.intervalo_s - (time.time() % self.intervalo_s) + 20
+            time.sleep(max(espera, 5))
+
+    def iniciar(self) -> "AtualizadorGLM":
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._laco, name="pdea-glm", daemon=True)
+            self._thread.start()
+        return self
+
+
+_UNICO: Optional[AtualizadorGLM] = None
+_TRAVA = threading.Lock()
+
+
+def obter_atualizador(iniciar: bool = True) -> AtualizadorGLM:
+    """Instância única por processo (várias sessões do painel compartilham a mesma coleta)."""
+    global _UNICO
+    with _TRAVA:
+        if _UNICO is None:
+            _UNICO = AtualizadorGLM()
+        if iniciar:
+            _UNICO.iniciar()
+        return _UNICO
+
+
+def dados_atuais() -> Optional[dict[str, Any]]:
+    """Instantâneo mais recente em memória; se a coleta ainda não terminou, tenta ler o arquivo gravado."""
+    a = obter_atualizador(iniciar=False)
+    if a.ultimo:
+        return a.ultimo
+    try:
+        return json.loads(a.caminho.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None

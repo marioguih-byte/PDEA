@@ -110,6 +110,9 @@ def escore_oof_treino(modelo, X: np.ndarray, y: np.ndarray, grupos: np.ndarray) 
     return oof
 
 
+NOME_CLIM = "Climatologia (local x hora do dia)"
+
+
 def rodar_validacao(d: pd.DataFrame, y: np.ndarray, conjuntos: list[str], modelos: list[str], esquema: str, semente: int):
     folds, esquema = dividir(d, esquema)
     dias = d["hora"].dt.date.astype(str).to_numpy()
@@ -125,6 +128,8 @@ def rodar_validacao(d: pd.DataFrame, y: np.ndarray, conjuntos: list[str], modelo
     espec = [(f"PDEA-P {t} [{c}]", t, c) for t in modelos for c in conjuntos]
     for nome, _, _ in espec:
         guardar(nome)
+    guardar(NOME_CLIM)
+    loc, hd = d["local"].to_numpy(), d["hora"].dt.hour.to_numpy()
 
     for tr, te in folds:
         clim = y[tr].mean()
@@ -137,6 +142,20 @@ def rodar_validacao(d: pd.DataFrame, y: np.ndarray, conjuntos: list[str], modelo
             preds[nome]["p"][te] = cal(st)
             preds[nome]["prev"][te] = np.nan_to_num(st, nan=-np.inf) >= lim
             preds[nome]["clim"][te] = clim
+        # climatologia: frequência de raio por local e hora do dia, estimada só no treino
+        tab = pd.DataFrame({"l": loc[tr], "h": hd[tr], "y": y[tr]})
+        m_lh = tab.groupby(["l", "h"])["y"].mean().to_dict()
+        m_h = tab.groupby("h")["y"].mean().to_dict()
+
+        def clim_f(idx):
+            return np.array([m_lh.get((l_, h_), m_h.get(h_, clim)) for l_, h_ in zip(loc[idx], hd[idx])])
+
+        s_tr, s_te = clim_f(tr), clim_f(te)
+        cal_c, lim_c = platt(s_tr, y[tr]), escolher_limiar(y[tr], s_tr)
+        preds[NOME_CLIM]["escore"][te] = s_te
+        preds[NOME_CLIM]["p"][te] = cal_c(s_te)
+        preds[NOME_CLIM]["prev"][te] = s_te >= lim_c
+        preds[NOME_CLIM]["clim"][te] = clim
         for nome, tipo, conj in espec:
             cols = pp.CONJUNTOS[conj]
             X = d[cols].to_numpy(dtype=float)
@@ -237,6 +256,43 @@ def escala_diaria(d: pd.DataFrame, y: np.ndarray, preds) -> pd.DataFrame:
     return pd.DataFrame(linhas)
 
 
+def resumo_por_estrato(d: pd.DataFrame, y: np.ndarray, preds, coluna: str, nomes: list[str], min_eventos: int = 10) -> pd.DataFrame:
+    """AUC, AP, POD, FAR e CSI por estrato (região, estação do ano, faixa de CAPE, litoral/interior, antecedência)."""
+    linhas = []
+    for val in sorted(d[coluna].dropna().unique(), key=str):
+        m = (d[coluna] == val).to_numpy()
+        for nome in nomes:
+            if nome not in preds:
+                continue
+            pr = preds[nome]
+            ok = m & np.isfinite(pr["escore"])
+            if ok.sum() < 50 or y[ok].sum() < min_eventos or y[ok].sum() == ok.sum():
+                continue
+            e = _estatisticas(y[ok], pr["escore"][ok], pr["p"][ok], pr["prev"][ok], pr["clim"][ok])
+            linhas.append({"estrato": coluna, "valor": val, "preditor": nome, "n": int(ok.sum()), "eventos": int(y[ok].sum()),
+                           **{k: e[k] for k in ("AUC", "AP", "POD", "FAR", "CSI")}})
+    return pd.DataFrame(linhas)
+
+
+def adicionar_estratos(d: pd.DataFrame) -> list[str]:
+    """Cria as colunas de estrato disponíveis e devolve seus nomes."""
+    est = []
+    mes = d["hora"].dt.month
+    d["estacao"] = np.select([mes.isin([12, 1, 2]), mes.isin([3, 4, 5]), mes.isin([6, 7, 8])], ["DJF (verão)", "MAM (outono)", "JJA (inverno)"], "SON (primavera)")
+    est.append("estacao")
+    d["faixa_cape"] = pd.cut(d["cape"].clip(lower=0), [-1, 300, 1000, np.inf], labels=["CAPE < 300", "300 a 1000", "CAPE >= 1000"]).astype(str)
+    d.loc[d["cape"].isna(), "faixa_cape"] = np.nan
+    est.append("faixa_cape")
+    if "regiao" in d.columns:
+        est.append("regiao")
+    if "costeira" in d.columns:
+        d["litoral"] = np.where(d["costeira"] == 1, "litoral", "interior"); est.append("litoral")
+    if "antecedencia_h" in d.columns:
+        d["faixa_antecedencia"] = pd.cut(d["antecedencia_h"], [-1, 6, 12, 24, 48, 1000], labels=["0-6 h", "6-12 h", "12-24 h", "24-48 h", ">48 h"]).astype(str)
+        est.append("faixa_antecedencia")
+    return est
+
+
 def tabela_confiabilidade(y, p, n_bins: int = 10) -> pd.DataFrame:
     ok = np.isfinite(p)
     df = pd.DataFrame({"p": p[ok], "y": y[ok]})
@@ -253,6 +309,7 @@ def gerar_demo(semente: int = 0) -> pd.DataFrame:
         horas = pd.date_range(f"{mes}-01", periods=30 * 24, freq="h")
         for local in ["Cidade A", "Cidade B", "Cidade C", "Cidade D", "Cidade E", "Cidade F"]:
             costeira = 1 if local in ("Cidade A", "Cidade D") else 0
+            regiao = {"Cidade A": "Sul", "Cidade B": "Sul", "Cidade C": "Nordeste", "Cidade D": "Nordeste"}.get(local, "Norte")
             regime = np.repeat(rng.normal(0, 1, 30), 24)
             diurno = np.tile(np.clip(np.sin((np.arange(24) - 8) / 24 * 2 * np.pi), 0, None), 30)
             cape = np.clip(rng.gamma(2, 120, len(horas)) * (0.4 + 1.2 * diurno) * np.exp(0.5 * regime), 0, 4500)
@@ -266,7 +323,7 @@ def gerar_demo(semente: int = 0) -> pd.DataFrame:
                 "local": local, "hora": horas, "cape": cape, "li": li, "cin": cin, "precip": chuva,
                 "rajada": rng.gamma(4, 6, len(horas)), "nivel0": rng.normal(4300, 250, len(horas)),
                 "t850": rng.normal(16, 3, len(horas)), "t500": rng.normal(-8, 2, len(horas)), "flashes": flashes,
-                "costeira": costeira}))
+                "costeira": costeira, "regiao": regiao, "antecedencia_h": 12}))
     return pd.concat(linhas, ignore_index=True)
 
 
@@ -280,6 +337,7 @@ def main() -> None:
     ap.add_argument("--limiar-flashes", type=int, default=1, help="flashes/hora que definem o evento")
     ap.add_argument("--conjuntos", nargs="+", default=["nucleo", "nucleo_cin", "completo", "defasagem"], choices=list(pp.CONJUNTOS))
     ap.add_argument("--modelos", nargs="+", default=["logistica", "gbm"], choices=["logistica", "gbm"])
+    ap.add_argument("--antecedencia", help="filtra a antecedência da previsão, em horas, no formato MIN-MAX (ex.: 12-24; MAX exclusivo)")
     ap.add_argument("--bootstrap", type=int, default=500)
     ap.add_argument("--semente", type=int, default=0)
     a = ap.parse_args()
@@ -292,6 +350,14 @@ def main() -> None:
     else:
         raise SystemExit("Informe --csv ou --demo.")
 
+    if "antecedencia_h" in bruto.columns:
+        if a.antecedencia:
+            lo, hi = (float(x) for x in a.antecedencia.split("-"))
+            bruto = bruto[(bruto["antecedencia_h"] >= lo) & (bruto["antecedencia_h"] < hi)]
+            bruto = bruto.sort_values(["local", "hora", "antecedencia_h"]).drop_duplicates(["local", "hora"], keep="first")
+            print(f"Antecedência {a.antecedencia} h: {len(bruto)} linhas (uma execução por capital e hora).")
+        elif bruto.duplicated(["local", "hora"]).any():
+            raise SystemExit("A tabela tem várias execuções para a mesma capital e hora: use --antecedencia MIN-MAX (ex.: 12-24).")
     d = pp.construir_atributos(bruto)
     if "flashes" not in d.columns:
         raise SystemExit("A tabela precisa da coluna 'flashes' (contagem do GLM por hora).")
@@ -305,12 +371,19 @@ def main() -> None:
     resumo = resumir(d, y, preds, a.bootstrap, a.semente)
     ganho = ganho_sobre_referencia(d, y, preds, "PDEA-R (CAPE x chuva, escore do painel)", a.bootstrap, a.semente)
     diario = escala_diaria(d, y, preds)
+    ganho_clim = ganho_sobre_referencia(d, y, preds, NOME_CLIM, a.bootstrap, a.semente)
+    estratos = adicionar_estratos(d)
 
     out = Path(a.saida)
     out.mkdir(parents=True, exist_ok=True)
     resumo.to_csv(out / "metricas.csv", index=False, sep=";", decimal=",")
     ganho.to_csv(out / "ganho_sobre_pdea_r.csv", index=False, sep=";", decimal=",")
     diario.to_csv(out / "escala_diaria.csv", index=False, sep=";", decimal=",")
+    ganho_clim.to_csv(out / "ganho_sobre_climatologia.csv", index=False, sep=";", decimal=",")
+    _tr = resumo[resumo["preditor"].str.startswith("PDEA-P")].sort_values("AUC", ascending=False)
+    nomes_estrato = ["PDEA-R (CAPE x chuva, escore do painel)", NOME_CLIM] + ([_tr.iloc[0]["preditor"]] if len(_tr) else [])
+    por_estrato = pd.concat([resumo_por_estrato(d, y, preds, c, nomes_estrato) for c in estratos], ignore_index=True)
+    por_estrato.to_csv(out / "por_estrato.csv", index=False, sep=";", decimal=",")
 
     # confiabilidade e modelo final do melhor preditor probabilístico (por AUC)
     treinaveis = resumo[resumo["preditor"].str.startswith("PDEA-P")].sort_values("AUC", ascending=False)
@@ -338,6 +411,8 @@ def main() -> None:
         print(resumo[cols_show].to_string(index=False))
         print("\nGanho sobre a PDEA-R (IC 95% por bootstrap de dias):")
         print(ganho[["preditor", "dAUC", "dAUC_lo", "dAUC_hi", "dCSI", "dCSI_lo", "dCSI_hi"]].to_string(index=False))
+        print("\nGanho sobre a climatologia (local x hora do dia), IC 95%:")
+        print(ganho_clim[ganho_clim["preditor"].str.startswith(("PDEA-R", "PDEA-H"))][["preditor", "dAUC", "dAUC_lo", "dAUC_hi", "dCSI", "dCSI_lo", "dCSI_hi"]].to_string(index=False))
         print("\nEscala diária (pico do escore):")
         print(diario.to_string(index=False))
     print(f"\nArquivos salvos em {out.resolve()}")

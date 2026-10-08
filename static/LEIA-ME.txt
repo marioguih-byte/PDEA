@@ -1,0 +1,1 @@
+Pasta servida pelo Streamlit em /app/static/. O arquivo glm_flashes.txt e gerado a cada 5 min por glm_ao_vivo.py (nao versionar).

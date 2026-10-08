@@ -7,10 +7,12 @@ heurística, exportação e detalhe horário com gráficos para cada capital.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import time
 from datetime import datetime
+from functools import lru_cache
 from html import escape
 from pathlib import Path
 from typing import Any, Optional
@@ -23,9 +25,14 @@ from branca.element import Element, MacroElement
 from jinja2 import Template
 from streamlit_folium import st_folium
 
+try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
+    import glm_ao_vivo
+except Exception:  # noqa: BLE001 - sem o módulo/dependência, o painel só esconde a opção
+    glm_ao_vivo = None
+
 st.set_page_config(
     page_title="PDEA | Painel Meteorológico",
-    page_icon="⚡",
+    page_icon=str(Path(__file__).resolve().parent / "assets" / "pdea_icone.png"),
     layout="wide",
     initial_sidebar_state="auto",  # recolhida automaticamente em telas pequenas
 )
@@ -156,6 +163,23 @@ def _inicializar_estado() -> None:
         st.session_state.setdefault(chave, valor)
 
 
+@lru_cache(maxsize=1)
+def _logo_base64() -> str:
+    """Logo do PDEA embutida (data URI), para não depender de arquivos estáticos."""
+    arq = Path(__file__).resolve().parent / "assets" / "pdea_logo.png"
+    try:
+        return "data:image/png;base64," + base64.b64encode(arq.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
+
+
+def _html_logo(classe: str) -> str:
+    uri = _logo_base64()
+    if not uri:
+        return "<b>PDEA</b>"
+    return f"<img class='{classe}' src='{uri}' alt='PDEA: Preditor de Descargas Elétricas Atmosféricas'>"
+
+
 def recriar_mapa() -> None:
     """Descarta o clique antigo do componente (a posição é preservada no navegador)."""
     st.session_state["versao_mapa"] += 1
@@ -191,6 +215,149 @@ def _rgba(cor_hex: str, alfa: float) -> str:
 def carregar_geojson(arquivo: str) -> dict[str, Any]:
     """Carrega o contorno/máscara do Brasil empacotado em dados/."""
     return json.loads((RAIZ / "dados" / arquivo).read_text(encoding="utf-8"))
+
+
+class RaiosGLM(MacroElement):
+    """Camada de raios do GLM que se atualiza sozinha no navegador, sem acionar o Streamlit.
+
+    O servidor grava ``static/glm_flashes.txt`` a cada 5 min (``glm_ao_vivo.py``). Este script busca o arquivo e redesenha
+    só a camada de raios. O instantâneo ``inicial`` (embutido no mapa) cobre o primeiro desenho.
+    """
+
+    _template = Template(
+        """
+        {% macro script(this, kwargs) %}
+        (function () {
+            var mapa = {{ this._parent.get_name() }};
+            function origem() {
+                var o = window.origin;
+                return (o && o !== 'null') ? o : '';
+            }
+            var URLS = {{ this.urls }}.map(function (u) { return origem() + u; });
+            var JANELA_S = {{ this.janela_s }};
+            var INTERVALO_MS = {{ this.intervalo_ms }};
+            var inicial = {{ this.inicial }};
+            var grupo = L.layerGroup().addTo(mapa);
+            var estado = {gerado: null, recebido: 0, dados: null, url: null};
+
+            var chip = L.control({position: 'topright'});
+            chip.onAdd = function () {
+                var d = L.DomUtil.create('div', 'pdea-glm-chip');
+                d.innerHTML = '<b>&#9889; Raios GLM</b><br><span class="g-n">carregando...</span>';
+                L.DomEvent.disableClickPropagation(d);
+                return d;
+            };
+            chip.addTo(mapa);
+
+            function hora(ms) {
+                try {
+                    return new Date(ms).toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo'});
+                } catch (e) { return ''; }
+            }
+            function agoraServidor() {
+                return estado.gerado + (performance.now() - estado.recebido) / 1000;
+            }
+            function estilo(idadeS) {
+                var m = idadeS / 60;
+                if (m <= 5) { return {r: 4.5, f: '#fff36b', b: '#1f2933'}; }
+                if (m <= 15) { return {r: 3.5, f: '#ff9a1f', b: '#7a3a00'}; }
+                return {r: 3, f: '#e0401f', b: '#5c1409'};
+            }
+            function texto(n, d) {
+                var el = chip.getContainer();
+                if (!el) { return; }
+                if (!d) { el.innerHTML = '<b>&#9889; Raios GLM</b><br><span class="g-n">aguardando dados</span>'; return; }
+                var ult = d.ultimo_arquivo ? d.ultimo_arquivo * 1000 : null;
+                var atraso = ult ? Math.round((agoraServidor() * 1000 - ult) / 60000) : null;
+                var obs = ult ? ('dados at&eacute; ' + hora(ult) + ' (h&aacute; ' + atraso + ' min)') : 'sem arquivos recentes';
+                var aviso = (atraso !== null && atraso > 15) ? ' &middot; <span class="g-aviso">atrasado</span>' : '';
+                el.innerHTML = '<b>&#9889; Raios GLM</b> &middot; ' + n.toLocaleString('pt-BR') + ' nos &uacute;ltimos ' +
+                    Math.round(d.janela_min) + ' min<br><span class="g-n">' + obs + aviso + '</span>';
+            }
+            function desenhar() {
+                var d = estado.dados;
+                grupo.clearLayers();
+                if (!d || !d.raios) { texto(0, d); return; }
+                var agora = agoraServidor();
+                var idadeExtra = agora - d.gerado;
+                var visiveis = [];
+                for (var i = 0; i < d.raios.length; i++) {
+                    var r = d.raios[i];
+                    var idade = r[2] + idadeExtra;
+                    if (idade <= JANELA_S) { visiveis.push([r[0], r[1], idade]); }
+                }
+                visiveis.sort(function (a, b) { return b[2] - a[2]; });  // mais antigos primeiro; os novos ficam por cima
+                for (var j = 0; j < visiveis.length; j++) {
+                    var v = visiveis[j], e = estilo(v[2]);
+                    L.circleMarker([v[0], v[1]], {radius: e.r, color: e.b, weight: 0.6, fillColor: e.f, fillOpacity: 0.92,
+                                                  opacity: 0.9, interactive: false}).addTo(grupo);
+                }
+                texto(visiveis.length, d);
+            }
+            function aplicar(d) {
+                if (!d || !d.raios) { return; }
+                if (estado.gerado !== null && d.gerado === estado.gerado) { return; }  // nada novo
+                estado.dados = d; estado.gerado = d.gerado; estado.recebido = performance.now();
+                desenhar();
+            }
+            function tentar(ordem, i) {
+                if (i >= ordem.length) { return Promise.reject(new Error('sem arquivo')); }
+                var url = ordem[i];
+                return fetch(url, {cache: 'no-cache'}).then(function (r) {
+                    if (!r.ok) { throw new Error('http ' + r.status); }
+                    return r.text();
+                }).then(function (txt) {
+                    var d = JSON.parse(txt);
+                    if (!d || !d.raios) { throw new Error('formato'); }
+                    estado.url = url;
+                    return d;
+                }).catch(function () {
+                    return tentar(ordem, i + 1);
+                });
+            }
+            function meta(url) {
+                return fetch(url.replace('glm_flashes.txt', 'glm_meta.txt'), {cache: 'no-cache'}).then(function (r) {
+                    if (!r.ok) { throw new Error('http ' + r.status); }
+                    return r.text();
+                }).then(function (txt) { return JSON.parse(txt); });
+            }
+            function buscar() {
+                // começa pelo endereço que funcionou da última vez; se falhar, testa os demais
+                var ordem = estado.url ? [estado.url].concat(URLS.filter(function (u) { return u !== estado.url; })) : URLS;
+                var passo = estado.url
+                    ? meta(estado.url).then(function (m) {
+                        return (m && m.gerado === estado.gerado) ? null : tentar(ordem, 0);  // só baixa o arquivo grande se mudou
+                    }).catch(function () { return tentar(ordem, 0); })
+                    : tentar(ordem, 0);
+                passo.then(function (d) { if (d) { aplicar(d); } }).catch(function () {
+                    estado.url = null;
+                    if (!estado.dados) { texto(0, null); }
+                });
+            }
+
+            if (inicial && inicial.raios) { aplicar(inicial); }
+            buscar();
+            setInterval(buscar, INTERVALO_MS);       // consulta o arquivo de metadados (poucos bytes); só baixa e redesenha se mudou
+            setInterval(desenhar, 60000);            // as cores acompanham a idade dos raios
+        })();
+        {% endmacro %}
+        """
+    )
+
+    def __init__(self, inicial: Optional[dict], caminho_base: str = "", janela_s: int = 1800, intervalo_ms: int = 30000) -> None:
+        super().__init__()
+        self._name = "RaiosGLM"
+        base = (caminho_base or "").rstrip("/")
+        arq = "app/static/glm_flashes.txt"
+        # O mapa roda dentro de um iframe: usa a origem herdada (window.origin) e, no Streamlit Cloud, também o prefixo /~/+/.
+        self.urls = json.dumps([f"{base}/{arq}", f"/~/+/{arq}"])
+        self.janela_s = int(janela_s)
+        self.intervalo_ms = int(intervalo_ms)
+        if inicial and inicial.get("raios"):
+            recorte = {**inicial, "raios": sorted(inicial["raios"], key=lambda r: r[2])[:6000]}  # só o necessário ao 1º desenho
+            self.inicial = json.dumps(recorte, separators=(",", ":"))
+        else:
+            self.inicial = "null"
 
 
 class AjusteBrasil(MacroElement):
@@ -272,13 +439,20 @@ class AjusteBrasil(MacroElement):
         self.limites = json.dumps(limites)
 
 
-def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: bool = False) -> str:
+def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: bool = False, glm: bool = False) -> str:
     itens = "".join(
         f"<div class='rl-item'><span class='rl-dot' style='background:{cores[nivel]}'></span>{nivel}</div>"
         for _, nivel, _ in NIVEIS_RISCO[::-1]
     )
     if goes:
         itens += "<div class='rl-sub' style='margin:4px 0 2px'>☁ Nuvens: GOES-East IR (cores quentes/frias = topos mais altos)</div>"
+    if glm:
+        itens += (
+            "<div class='rl-sub' style='margin:6px 0 2px'>&#9889; Raios observados (GLM), idade:</div>"
+            "<div class='rl-item'><span class='rl-raio' style='background:#fff36b'></span>até 5 min</div>"
+            "<div class='rl-item'><span class='rl-raio' style='background:#ff9a1f'></span>5 a 15 min</div>"
+            "<div class='rl-item'><span class='rl-raio' style='background:#e0401f'></span>15 a 30 min</div>"
+        )
     return f"""
     <style>
       .leaflet-tooltip {{ font: 600 12px 'Segoe UI', Arial, sans-serif; color:#1f2933; border:0;
@@ -298,6 +472,11 @@ def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: boo
       .pdea-legenda .rl-titulo {{ font-weight:700; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
         color:#52606d; margin-bottom:4px; }}
       .pdea-legenda .rl-sub {{ color:#7b8794; font-size:10.5px; margin:-2px 0 4px; }}
+      .rl-raio {{ width:9px; height:9px; border-radius:50%; border:1px solid rgba(15,23,42,.55); margin:0 1px; }}
+      .pdea-glm-chip {{ background:rgba(255,255,255,.94); border:1px solid rgba(15,23,42,.12); border-radius:10px; padding:6px 10px;
+        font:12px 'Segoe UI', Arial, sans-serif; color:#1f2933; box-shadow:0 4px 14px rgba(15,23,42,.18); line-height:1.35; }}
+      .pdea-glm-chip .g-n {{ color:#52606d; font-size:11px; }}
+      .pdea-glm-chip .g-aviso {{ color:#b45309; font-weight:700; }}
       .rl-item {{ display:flex; align-items:center; gap:7px; margin:3px 0; }}
       .rl-dot {{ width:11px; height:11px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px rgba(15,23,42,.25); }}
     </style>
@@ -345,6 +524,7 @@ def criar_mapa(
     divisas: bool = False,
     goes: bool = False,
     goes_opacidade: float = 0.6,
+    glm: bool = False,
 ) -> folium.Map:
     """Cria o mapa Folium travado no Brasil, com marcadores clicáveis."""
     configuracao = TILES[estilo]
@@ -431,8 +611,12 @@ def criar_mapa(
             z_index_offset=0 if pd.isna(score) else int(score * 10),
         ).add_to(mapa)
 
+    if glm:
+        # Raios do GLM: desenhados no navegador e atualizados sozinhos (sem recarregar a página nem acionar o Streamlit).
+        inicial = glm_ao_vivo.dados_atuais() if glm_ao_vivo else None
+        mapa.add_child(RaiosGLM(inicial, caminho_base=st.get_option("server.baseUrlPath") or ""))
     mapa.add_child(AjusteBrasil(LIMITES_BRASIL))
-    mapa.get_root().html.add_child(Element(_legenda_mapa(cores, rotulo_hora, fonte, goes)))
+    mapa.get_root().html.add_child(Element(_legenda_mapa(cores, rotulo_hora, fonte, goes, glm)))
     return mapa
 
 
@@ -749,6 +933,12 @@ def renderizar_estilo() -> None:
         [data-testid="stSidebar"] [data-testid^="stBaseButton-secondary"]:hover { border-color: #e0b400 !important; background: #2b323d !important; transform: translateX(2px); }
         [data-testid="stSidebar"] [data-baseweb="select"] > div { background: #212731; border-color: #323a46; color: #f2f4f8; border-radius: 9px; }
         [data-testid="stSidebar"] input { background: #212731 !important; color: #f2f4f8 !important; border-color: #323a46 !important; }
+        .logo-cartao { background:#ffffff; border-radius:12px; padding:.45rem .7rem; display:inline-flex; align-items:center;
+            box-shadow:0 4px 14px rgba(0,0,0,.28); }
+        .logo-cartao img { display:block; height:auto; }
+        .logo-lateral { width:100%; max-width:210px; }
+        .logo-topo { height:64px; width:auto; }
+        .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
         .marca-lateral { display:flex; align-items:center; gap:.6rem; margin-bottom:.1rem; }
         .marca-lateral .raio { width:2.1rem; height:2.1rem; border-radius:10px; display:grid; place-items:center; font-size:1.15rem; background:linear-gradient(135deg,#f5c518,#e0761f); box-shadow:0 4px 14px rgba(224,118,31,.35); }
         .marca-lateral b { font-size:1.25rem; letter-spacing:.03em; }
@@ -802,7 +992,7 @@ def renderizar_estilo() -> None:
         .rodape-sec { margin-top:.4rem; color:#8895a7; font-size:.78rem; }
         @media (max-width: 760px) {
             .kpi .kpi-v { font-size:1.45rem; }
-            .pdea-titulo { font-size:1.25rem; }
+            .logo-topo { height:48px; }
         }
         </style>
         """,
@@ -958,6 +1148,7 @@ def secao_mapa(tabela: pd.DataFrame, ctx: dict[str, Any], estilo: str, mostrar_s
         ctx["divisas"],
         ctx["goes"],
         ctx["goes_opacidade"],
+        ctx["glm"],
     )
     resultado_mapa = st_folium(
         mapa,
@@ -976,14 +1167,24 @@ def secao_mapa(tabela: pd.DataFrame, ctx: dict[str, Any], estilo: str, mostrar_s
         abrir_detalhamento(st.session_state["estacao_popup"], ctx)
 
 
+@st.cache_resource
+def _iniciar_coleta_glm() -> bool:
+    """Liga, uma única vez por processo do servidor, a coleta dos raios do GLM (a cada 5 min)."""
+    if glm_ao_vivo is None:
+        return False
+    glm_ao_vivo.obter_atualizador(iniciar=True)
+    return True
+
+
 def main() -> None:
     _inicializar_estado()
     renderizar_estilo()
+    _iniciar_coleta_glm()
 
     # ------------------------------------------------------------------ barra lateral (controles)
     with st.sidebar:
         st.markdown(
-            "<div class='marca-lateral'><div class='raio'>⚡</div><b>PDEA</b></div>",
+            f"<div class='logo-cartao'>{_html_logo('logo-lateral')}</div>",
             unsafe_allow_html=True,
         )
         st.caption("PAINEL METEOROLÓGICO")
@@ -1007,6 +1208,13 @@ def main() -> None:
             divisas = st.toggle("Divisas estaduais", value=True)
             goes = st.toggle("Topos de nuvem (GOES-East)", help="Infravermelho do GOES-East (NASA GIBS), atualizado a cada ~10 min com atraso de cerca de 30 min. Requer internet no navegador.")
             goes_opacidade = st.slider("Opacidade das nuvens", 0.2, 0.9, 0.6, step=0.05) if goes else 0.6
+            glm = False
+            if glm_ao_vivo is not None:
+                glm = st.toggle(
+                    "Raios em tempo real (GLM)", value=True,
+                    help="Flashes observados pelo GLM do GOES-East nos últimos 30 min. Atualiza sozinho a cada 5 min, sem recarregar a página. "
+                         "O GLM mede a atividade elétrica total (intranuvem e nuvem-solo), com atraso de alguns minutos. É observação, não previsão.",
+                )
 
 
     if modelo_id != st.session_state["modelo_anterior"]:
@@ -1085,6 +1293,7 @@ def main() -> None:
         "divisas": divisas,
         "goes": goes,
         "goes_opacidade": goes_opacidade,
+        "glm": glm,
         "extras": extras_disponiveis,
         "gate": gate,
         "regioes": regioes,
@@ -1124,9 +1333,8 @@ def main() -> None:
         pilulas.append(f"<span class='pill'>Dados · <b>há {minutos} min</b></span>")
     # HTML numa única linha por bloco: linhas em branco quebrariam o parser de Markdown.
     cabecalho_html = (
-        "<div class='pdea-cabecalho'><div class='raio'>⚡</div>"
-        "<div><p class='pdea-titulo'>PDEA</p>"
-        "<p class='pdea-subtitulo'>Preditor de Descargas Elétricas Atmosféricas</p></div>"
+        f"<div class='pdea-cabecalho'><div class='logo-cartao'>{_html_logo('logo-topo')}</div>"
+        "<h1 class='sr-only'>PDEA: Preditor de Descargas Elétricas Atmosféricas</h1>"
         f"<div class='pdea-pills'>{''.join(pilulas)}</div></div>"
     )
     with area_cabecalho:

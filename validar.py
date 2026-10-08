@@ -186,6 +186,91 @@ def testes_capexp() -> None:
     print("Testes do método CAPE x chuva e das capitais: OK")
 
 
+def testes_glm_ao_vivo() -> None:
+    """Coletor dos raios do GLM com um S3 simulado (arquivos NetCDF sintéticos); pula se netCDF4 não estiver instalado."""
+    try:
+        import netCDF4
+    except ImportError:
+        print("Testes do GLM ao vivo: PULADOS (instale netCDF4)")
+        return
+    import glm_ao_vivo as g
+    from datetime import timezone
+
+    def nc_bytes(pasta: Path, lats, lons) -> bytes:
+        f = pasta / "x.nc"
+        with netCDF4.Dataset(f, "w", format="NETCDF4") as ds:
+            ds.createDimension("n", len(lats))
+            for nome, vals in (("flash_lat", lats), ("flash_lon", lons)):
+                ds.createVariable(nome, "f4", ("n",))[:] = vals
+        return f.read_bytes()
+
+    agora = datetime(2026, 10, 8, 18, 3, 40, tzinfo=timezone.utc)
+
+    def chave(t_):
+        doy = t_.timetuple().tm_yday
+        return f"GLM-L2-LCFA/{t_.year}/{doy:03d}/{t_.hour:02d}/OR_GLM-L2-LCFA_G19_s{t_.year}{doy:03d}{t_:%H%M%S}0_e0_c0.nc"
+
+    class Resp:
+        def __init__(self, content=b"", code=200):
+            self.content, self.status_code = content, code
+
+        def raise_for_status(self):
+            if self.status_code != 200:
+                raise RuntimeError(self.status_code)
+
+    class S3Falso:
+        def __init__(self, arquivos, ruins=()):
+            self.arq, self.ruins, self.baixados = arquivos, set(ruins), []
+
+        def get(self, url, params=None, timeout=None):
+            if params and "list-type" in params:
+                itens = "".join(f"<Contents><Key>{k}</Key></Contents>" for k in sorted(self.arq) if k.startswith(params["prefix"]))
+                xml = f'<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">{itens}<IsTruncated>false</IsTruncated></ListBucketResult>'
+                return Resp(xml.encode())
+            k = url.split(".amazonaws.com/")[1]
+            self.baixados.append(k)
+            return Resp(b"lixo" if k in self.ruins else self.arq[k])
+
+    assert g.inicio_do_arquivo(chave(agora)) == agora.replace(microsecond=0) and g.inicio_do_arquivo("sem-padrao.nc") is None
+    with tempfile.TemporaryDirectory() as p:
+        pasta = Path(p)
+        arquivos = {}
+        t0 = agora.replace(second=0) - timedelta(minutes=50)
+        while t0 <= agora:
+            arquivos[chave(t0)] = nc_bytes(pasta, [-3.7, -23.5, 40.0, -3.7], [-38.5, -46.6, -100.0, -120.0])  # 2 no Brasil, 2 fora
+            t0 += timedelta(seconds=20)
+        ruim = chave(agora.replace(second=0) - timedelta(minutes=1))
+        cli = S3Falso(arquivos, ruins=[ruim])
+        a = g.AtualizadorGLM(caminho=pasta / "static" / "glm_flashes.txt", cliente=cli, janela_min=30)
+        d = a.atualizar(agora)
+        dentro = len([k for k in arquivos if g.inicio_do_arquivo(k) >= agora - timedelta(minutes=30)]) - 1  # menos o arquivo ruim
+        assert d["arquivos"] == dentro and len(d["raios"]) == 2 * dentro
+        assert all(-35 <= r[0] <= 7 and -75 <= r[1] <= -32 for r in d["raios"]) and 0 <= min(r[2] for r in d["raios"])
+        assert max(r[2] for r in d["raios"]) <= 30 * 60 + 20
+        antes = len(cli.baixados)
+        for k in range(1, 16):
+            arquivos[chave(agora + timedelta(seconds=20 * k))] = nc_bytes(pasta, [-8.0], [-35.0])
+        d2 = a.atualizar(agora + timedelta(minutes=5))
+        assert len(cli.baixados) - antes == 15 and cli.baixados.count(ruim) == 1  # incremental; o arquivo ruim não é refeito
+        assert any(r[0] == -8.0 for r in d2["raios"]) and max(r[2] for r in d2["raios"]) <= 30 * 60 + 20
+        a.gravar(d2)
+        import json as _json
+
+        assert _json.loads((pasta / "static" / "glm_flashes.txt").read_text(encoding="utf-8"))["gerado"] == d2["gerado"]
+        assert _json.loads((pasta / "static" / "glm_meta.txt").read_text(encoding="utf-8"))["gerado"] == d2["gerado"]
+        assert not list((pasta / "static").glob("*.tmp"))
+
+        class Quebrado:
+            def get(self, *args, **kw):
+                raise OSError("sem rede")
+
+        a2 = g.AtualizadorGLM(caminho=pasta / "static" / "glm_flashes.txt", cliente=Quebrado())
+        a2.rodada()
+        assert "OSError" in (a2.ultimo_erro or "")
+        assert _json.loads((pasta / "static" / "glm_flashes.txt").read_text(encoding="utf-8"))["gerado"] == d2["gerado"]  # mantém o último bom
+    print("Testes do GLM ao vivo (coleta incremental, janela, arquivo ruim, gravação atômica): OK")
+
+
 def testes_ampliados() -> None:
     # Heurística ampliada: pontos limitados, sem efeito com peso 0 ou sem dados extras.
     assert ajuste_extras(None) == 0 and ajuste_extras({}) == 0
@@ -399,6 +484,7 @@ if __name__ == "__main__":
     pd.set_option("display.width", 160)
     testes_offline()
     testes_capexp()
+    testes_glm_ao_vivo()
     testes_ampliados()
     if "--online" in sys.argv:
         from modelos import ErroBuscaModelo

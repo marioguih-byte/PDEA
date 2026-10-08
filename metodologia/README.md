@@ -1,5 +1,48 @@
 # Metodologia de verificação do PDEA contra o GLM
 
+Este diretório não altera o painel. Ele reúne o protocolo e os scripts para **medir** se o escore do painel (PDEA-R =
+CAPE × chuva) tem acurácia e correlação úteis com o GLM, de forma reprodutível, **com previsões reais com antecedência**.
+
+## 0. Fluxo recomendado (previsões reais, 27 capitais)
+
+```bash
+pip install -r metodologia/requirements.txt
+# 1) confira o acesso (cada comando abaixo tem --testar)
+python metodologia/baixar_previsoes_runs.py --testar
+python metodologia/baixar_glm.py --testar
+# 2) previsões arquivadas por execução (Single Runs API): 00 e 12 UTC, antecedência de 0 a 72 h
+python metodologia/baixar_previsoes_runs.py --inicio 2024-03-14 --fim 2025-03-13 --saida runs/ --modelo ecmwf_ifs
+# 3) flashes do GLM por capital e hora, nos raios de 30, 50 e 100 km
+python metodologia/baixar_glm.py --inicio 2024-03-14 --fim 2025-03-13 --saida glm/
+# 4) tabela capital x hora x execução
+python metodologia/montar_tabela.py --runs runs/ --glm glm/ --raio 30 --saida tabela_30km.csv
+# 5) verificação por faixa de antecedência (uma execução por capital e hora em cada faixa)
+python metodologia/verificar_glm.py --csv tabela_30km.csv --saida res_12-24h --antecedencia 12-24 --esquema mes
+python metodologia/estimar_correcao_costeira.py --csv tabela_30km.csv   # use uma faixa de antecedência por vez
+```
+
+**Por que a Single Runs API e não a Previous Runs API:** a página da Previous Runs API (consultada em 8/10/2026) lista só
+variáveis de superfície, sem CAPE, LI nem CIN. A Single Runs API lista CAPE, LI, CIN, precipitação, rajada, nível de 0 °C e
+temperaturas em 850 e 500 hPa, e entrega qualquer execução pelo horário de inicialização (`run=`). O arquivo vai de
+**14/03/2024** (ECMWF IFS HRES 9 km, `ecmwf_ifs`) e de **02/04/2026** (a maioria dos demais modelos). Cada execução só fica
+disponível 4 a 6 h após a inicialização.
+
+**Satélite do GLM:** o GOES-16 era o GOES-East até 06/04/2025 e o GOES-19 passou a ser em 07/04/2025; o `baixar_glm.py`
+escolhe o bucket pela data. Um período que cruza essa data mistura dois instrumentos: considere analisar os dois trechos
+separadamente.
+
+**Cuidados de qualidade:**
+- Horas do GLM com poucos arquivos (< 160 de ~180) são descartadas em `montar_tabela.py`: ausência de arquivo não é ausência de raio.
+- O `baixar_glm.py` conta todos os flashes por padrão; `--filtro-qualidade` usa só `flash_quality_flag == 0`. Escolha uma opção e
+  mantenha-a em todo o estudo.
+- As horas locais usam um deslocamento fixo por UF (AC −5; AM, RO, RR, MT, MS −4; demais −3).
+- O plano gratuito da Open-Meteo é não comercial e tem limites de chamadas; o downloader pausa entre execuções e retoma de onde parou.
+
+**Status dos testes:** `python metodologia/testar_kit.py` testa offline os metadados, a contagem do GLM (com arquivos NetCDF
+sintéticos), o download simulado, a junção e a CLI. Os scripts de download \textbf{não foram executados contra a rede real}
+(o ambiente de desenvolvimento não tinha acesso): rode os dois `--testar` antes de começar.
+
+
 Este diretório não altera o painel. Ele reúne o protocolo para **medir** se um preditor de raios
 (o escore do painel, PDEA-R = CAPE × chuva, ou alternativas) tem acurácia e correlação úteis com o GLM, de forma reprodutível.
 

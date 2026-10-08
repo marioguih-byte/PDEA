@@ -22,7 +22,8 @@ Painel em **Streamlit** que mostra, para as **27 capitais brasileiras**, o poten
 | **Detalhe da capital** | Cartões (risco, CAPE, LI, CIN, tendência e variáveis extras), gráfico de 48 h do score sobre as faixas de risco, gráficos de CAPE/LI/CIN e das variáveis extras e tabela horária. |
 | **Regiões e variáveis extras** | O score usa CAPE × chuva. Fatores de CAPE por UF podem ser definidos em `config_regioes.json` (todos 1,0 por padrão). Lifted Index, CIN, rajada, gradiente 850–500 hPa e nível de 0 °C aparecem como cartões e gráficos no detalhe e no histórico, mas **não** entram no score. |
 | **Como o score foi calculado** | No detalhe de cada capital, uma tabela mostra o CAPE, a chuva prevista, o produto CAPE × chuva e o score final. |
-| **Camadas do mapa** | Divisas estaduais (ligadas por padrão) e topos de nuvem do GOES-East, infravermelho banda 13, via NASA GIBS (opcional, com controle de opacidade). |
+| **Camadas do mapa** | Divisas estaduais (ligadas por padrão), topos de nuvem do GOES-East (infravermelho, banda 13, via NASA GIBS, com controle de opacidade) e **raios observados pelo GLM** (ver abaixo). |
+| **Raios em tempo real (GLM)** | Flashes do GLM do GOES-East nos últimos 30 min, coloridos pela idade (até 5 min, 5 a 15 min, 15 a 30 min). Uma thread no servidor coleta os arquivos mais recentes do repositório público da NOAA a cada 5 min (minutos 0, 5, 10…) e grava `static/glm_flashes.txt`; o mapa busca o arquivo no navegador e redesenha **só a camada de raios**, sem recarregar a página nem acionar o Streamlit. Um cartão no mapa mostra o número de raios e a hora do dado mais recente. |
 | **Histórico** | Grava em SQLite, uma vez por hora e por modelo, CAPE, LI, CIN e variáveis extras das próximas 48 h. O painel mostra o score realizado e os gráficos de CAPE, LI, CIN e variáveis extras no período, como a previsão para um horário mudou entre execuções, e exporta CSV com score recalculado. |
 | **Exportação** | Tabela atual e séries horárias de 48 h em CSV (abre no Excel em português); mapa estático em PNG e relatório em PDF (mapa + ranking). |
 | **Acessibilidade** | Score escrito dentro da bolinha e barra lateral recolhida em telas pequenas. |
@@ -37,6 +38,10 @@ Painel em **Streamlit** que mostra, para as **27 capitais brasileiras**, o poten
 | `analise.py` | Séries de score, tendência, extras e fatores por UF (sem dependência do Streamlit). |
 | `historico.py` | Histórico das previsões em SQLite (módulo e linha de comando). |
 | `app_camadas.py` | Endereço e atribuição da camada GOES. |
+| `glm_ao_vivo.py` | Coleta dos raios do GLM em segundo plano (a cada 5 min) e gravação de `static/glm_flashes.txt`. |
+| `assets/` | Logo do PDEA (`pdea_logo.png`) e ícone da aba (`pdea_icone.png`). |
+| `static/` | Pasta servida pelo Streamlit em `/app/static/` (`enableStaticServing`); recebe os arquivos dos raios. |
+| `tests_js/` | Teste em Node do JavaScript da camada de raios (Leaflet real em jsdom). |
 | `config_regioes.json` | Fatores de CAPE e LI por UF (neutros por padrão). |
 | `risco_raio.py` | Heurística de risco, parâmetros de calibração e cores dos níveis. |
 | `modelos.py` | Consulta dos modelos (com tentativas) e normalização da resposta. |
@@ -69,6 +74,15 @@ python validar.py --online --modelos # idem para os 12 modelos: mostra quais dev
 - Escore = função monótona de `CAPE × chuva` (ver **Método**). Sem chuva prevista ou sem CAPE, o escore é zero; sem dado de precipitação do modelo, a capital aparece como "Sem dados".
 - O escore mede **potencial**, e não detecta descargas. Os níveis são provisórios até a calibração com o GLM (`metodologia/`).
 - O Open-Meteo combina modelos globais; use o seletor de modelo para comparar e avaliar a incerteza.
+
+## Raios em tempo real (GLM): detalhes
+
+- **Fonte:** arquivos GLM-L2-LCFA do bucket público `noaa-goes19` (GOES-East desde 07/04/2025), um arquivo a cada 20 s; a variável de ambiente `PDEA_GLM_BUCKET` troca o bucket.
+- **O que se vê:** o GLM mede a atividade elétrica **total** (intranuvem e nuvem-solo), com eficiência de detecção que varia com a posição e o horário; os arquivos chegam ao S3 com atraso de alguns minutos. É observação por satélite, não previsão nem alerta.
+- **Sem recarregar:** o navegador consulta `glm_meta.txt` (poucos bytes) a cada 30 s e só baixa `glm_flashes.txt` quando há dado novo. Se o arquivo não puder ser lido, o mapa mantém o último desenho e o cartão mostra o horário do dado.
+- **Requisitos:** `netCDF4` (em `requirements.txt`) e `server.enableStaticServing = true` (em `.streamlit/config.toml`). Sem eles o painel funciona, só sem a camada.
+- **Streamlit Community Cloud:** a coleta roda enquanto o app está ativo; quando o app hiberna por inatividade, a thread para, e a camada mostra "aguardando dados" até alguém acordar o app e a primeira coleta terminar (cerca de um minuto).
+- **Cuidado técnico:** a leitura NetCDF/HDF5 é feita um arquivo por vez, porque a biblioteca não é segura para várias threads.
 
 ## Histórico
 

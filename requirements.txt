@@ -6,3 +6,4 @@ pandas>=2.0
 numpy>=1.26
 altair>=5.0
 matplotlib>=3.8
+netCDF4>=1.6
