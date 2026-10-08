@@ -612,6 +612,43 @@ sys.stdout.write(json.dumps(saida))
     print("Testes do isolamento do NetCDF (processo filho, falha grave contida, um só coletor, parar): OK")
 
 
+def testes_mapa_estavel() -> None:
+    """O HTML do mapa tem de ser IGUAL entre execuções com os mesmos dados.
+
+    Se mudar (por exemplo, com um horário "de agora" embutido), o streamlit-folium recria o mapa e o clique em uma bolinha é perdido:
+    o painel de detalhes deixa de abrir. Foi o que aconteceu na versão do canal da página (08/10/2026).
+    """
+    import re
+    import time as _time
+
+    import analise
+    import app as pdea_app
+    import glm_ao_vivo as g
+
+    dados = _dados_sinteticos()
+    for sr in dados.values():
+        if isinstance(sr, dict):
+            sr["precip"] = [1.0] * len(sr["tempos"])
+    tab = analise.consolidar(dados, analise.series_por_unidade(dados, _ParametrosRisco()), 0)
+    agora = int(_time.time())
+    snap = {"versao": g.VERSAO_GLM, "gerado": agora, "janela_min": 20, "ultimo_arquivo": agora - 60, "arquivos": 60,
+            "raios": [[-3.7, -38.5, 60], [-23.5, -46.6, 700], [-10.0, -50.0, 1000]]}
+    original = g.dados_atuais
+    g.dados_atuais = lambda aguardar_s=0.0: snap
+    try:
+        def html() -> str:
+            h = pdea_app.criar_mapa(tab, "OpenStreetMap", pdea_app.CORES_NIVEL, True, "12:00", "Best Match", True, False, 0.6, True, True).get_root().render()
+            return re.sub(r"[0-9a-f]{32}", "ID", h)  # o folium sorteia os identificadores; o streamlit-folium os normaliza
+        a = html()
+        _time.sleep(1.2)  # um segundo depois, nada pode ter mudado (um horário embutido mudaria)
+        b = html()
+        assert a == b, "o HTML do mapa mudou entre execuções: o clique na bolinha seria perdido"
+    finally:
+        g.dados_atuais = original
+    assert '"agora"' not in a  # o instantâneo embutido não leva horário de envio
+    print("Teste do mapa estável entre execuções (clique na bolinha preservado): OK")
+
+
 def testes_ampliados() -> None:
     # Heurística ampliada: pontos limitados, sem efeito com peso 0 ou sem dados extras.
     assert ajuste_extras(None) == 0 and ajuste_extras({}) == 0
@@ -832,6 +869,7 @@ if __name__ == "__main__":
     testes_canal_e_rolagem()
     testes_legenda_retratil()
     testes_isolamento_netcdf()
+    testes_mapa_estavel()
     testes_ampliados()
     if "--online" in sys.argv:
         from modelos import ErroBuscaModelo

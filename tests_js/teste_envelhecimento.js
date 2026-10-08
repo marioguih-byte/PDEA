@@ -2,10 +2,12 @@
 // sem nenhuma requisição nova: o relógio do navegador é adiantado e os temporizadores são acelerados.
 const fs = require("fs"), { JSDOM } = require("jsdom");
 let adianta = 0;  // ms adiantados no relógio do navegador
+const gerado = Number(/"gerado":(\d+)/.exec(fs.readFileSync("mapa.html", "utf8"))[1]);   // hora da coleta embutida no mapa
 (async () => {
   const dom = new JSDOM(fs.readFileSync("mapa.html", "utf8"), {url: "http://localhost:1/", runScripts: "dangerously", pretendToBeVisual: true,
     beforeParse(w) {
       w.fetch = () => Promise.reject(new Error("sem rede"));
+      w.Date.now = () => gerado * 1000;   // o navegador "está" exatamente na hora da coleta (a idade extra vem só de performance.now, adiantado abaixo)
       const pn = w.performance.now.bind(w.performance); w.performance.now = () => pn() + adianta;
       const si = w.setInterval.bind(w); w.setInterval = (f, ms) => si(f, Math.max(5, ms / 100));  // 30 s vira 300 ms
     } });

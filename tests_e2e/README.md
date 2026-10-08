@@ -1,0 +1,17 @@
+# Teste de navegador (clique na bolinha, cores dos raios, painel de detalhes)
+
+Abre o painel em um Chromium de verdade (sem tela), com previsão e raios **simulados** (sem rede), e confere:
+- as quatro cores de raios (vermelho, laranja, amarelo e verde) têm contagem maior que zero;
+- clicar na bolinha de uma capital **abre o painel de detalhes**;
+- o painel **não fecha sozinho** durante as atualizações do canal dos raios (65 s, duas rodadas);
+- o botão *Fechar* fecha, e outra capital abre.
+
+```bash
+cd tests_e2e
+npm install @sparticuz/chromium puppeteer-core leaflet@1.9.4 jquery
+streamlit run launcher_teste.py --server.headless true --server.port 8765 &   # em outro terminal, se preferir
+node teste_clique.mjs
+```
+
+Foi este teste que mostrou, em 08/10/2026, por que o clique deixou de abrir o painel: o HTML do mapa mudava a cada execução (havia um
+horário embutido), o `streamlit-folium` recriava o mapa e perdia o clique.

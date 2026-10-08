@@ -13,6 +13,7 @@ python gerar_canal_teste.py
 python gerar_legenda_teste.py
 node teste_camada_glm.js       # atualização por arquivo e pelo canal da página, só dado mais novo, anti-cache, contagem por cor
 node teste_envelhecimento.js   # cores por idade e desaparecimento após 20 min (relógio adiantado)
+node teste_relogio.js          # idade dos raios sem horário de envio pelo relógio do navegador
 node teste_legenda.js          # legenda retrátil: abre/fecha, lembra a escolha, recolhida em tela estreita
 node teste_iframes.js          # mapa e canal em iframes irmãos, ligados pela janela mais alta (sem arquivo estático)
 ```

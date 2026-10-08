@@ -30,7 +30,7 @@ from streamlit_folium import st_folium
 # Carimbo de versão: fica no texto de ajuda (passar o mouse) dos créditos da barra lateral, para conferir qual cópia está no ar.
 # Alcance ao redor das capitais (km, cor): os mesmos raios usados na verificação contra o GLM. Linhas grossas e tracejadas.
 ALCANCES_KM = ((30, "#2ecc40"), (50, "#ffd400"), (100, "#e11d1d"))  # verde, amarelo, vermelho
-VERSAO_APP = "2026-10-08g"  # aparece só ao passar o mouse nos créditos da barra lateral
+VERSAO_APP = "2026-10-08h"  # aparece só ao passar o mouse nos créditos da barra lateral
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -345,8 +345,10 @@ class RaiosGLM(MacroElement):
                 if (!d || !d.raios) { return; }
                 if (estado.gerado !== null && d.gerado <= estado.gerado) { return; }  // só aceita dado MAIS NOVO
                 estado.dados = d; estado.gerado = d.gerado; estado.recebido = performance.now();
-                // se o dado traz a hora do servidor no envio, as idades ficam corretas mesmo que ele tenha chegado alguns segundos depois
-                estado.desloc = (typeof d.agora === 'number' && d.agora >= d.gerado && d.agora - d.gerado < 900) ? d.agora - d.gerado : 0;
+                // idade já decorrida desde a coleta: as cores ficam corretas mesmo que o dado tenha chegado minutos depois (mapa recriado, aba antiga)
+                var base = (typeof d.agora === 'number') ? d.agora : (Date.now() / 1000);   // hora do servidor (canal) ou, na falta dela, a do navegador
+                var dif = base - d.gerado;
+                estado.desloc = (dif >= 0 && dif < 3600) ? dif : 0;   // mais de 1 h (ou negativo): relógio do navegador errado, ignora
                 desenhar();
             }
             function lerCanal() {
@@ -422,7 +424,7 @@ class RaiosGLM(MacroElement):
         if inicial and inicial.get("raios"):
             # Só o necessário ao 1º desenho, com a mesma cota por faixa de idade: o amarelo e o verde (mais antigos) não ficam de fora.
             raios_ini = glm_ao_vivo.amostrar_por_faixa(inicial["raios"], 6000) if glm_ao_vivo else sorted(inicial["raios"], key=lambda r: r[2])[:6000]
-            recorte = {**inicial, "raios": raios_ini, "agora": int(time.time())}
+            recorte = {**inicial, "raios": raios_ini}  # sem horário "de agora": o HTML do mapa tem de ser igual entre execuções
             self.inicial = json.dumps(recorte, separators=(",", ":"))
         else:
             self.inicial = "null"
@@ -657,6 +659,35 @@ def _html_popup(linha: pd.Series, cor: str) -> str:
     """
 
 
+def _instantaneo_glm() -> Optional[dict]:
+    """Instantâneo dos raios embutido no mapa, CONGELADO enquanto o mapa não é recriado de propósito.
+
+    Se ele mudasse a cada coleta (5 min), o HTML do mapa mudaria entre execuções, o ``streamlit-folium`` recriaria o mapa e um clique
+    em andamento (por exemplo, numa bolinha) seria perdido: o painel de detalhes não abriria. Os raios novos chegam ao mapa pelo canal
+    da página e pelo arquivo estático, que não mexem no HTML. O instantâneo só é renovado quando o mapa é recriado (``versao_mapa``)
+    ou quando já tem mais de 10 min e há um mais novo.
+    """
+    if glm_ao_vivo is None:
+        return None
+    try:
+        guardado = st.session_state.get("glm_instantaneo")  # (versao_mapa, dados)
+        versao = st.session_state.get("versao_mapa")
+    except Exception:  # noqa: BLE001 - fora do Streamlit (testes): sem congelar
+        return glm_ao_vivo.dados_atuais(aguardar_s=12)
+    if guardado is not None and guardado[0] == versao and time.time() - guardado[1]["gerado"] < 600:
+        return guardado[1]
+    novo = glm_ao_vivo.dados_atuais(aguardar_s=12)
+    if novo is None:
+        return guardado[1] if guardado is not None and guardado[0] == versao else None
+    if guardado is not None and guardado[0] == versao and novo["gerado"] <= guardado[1]["gerado"]:
+        return guardado[1]
+    try:
+        st.session_state["glm_instantaneo"] = (versao, novo)
+    except Exception:  # noqa: BLE001
+        pass
+    return novo
+
+
 def criar_mapa(
     tabela: pd.DataFrame,
     estilo: str,
@@ -759,7 +790,7 @@ def criar_mapa(
         adicionar_alcance(mapa, tabela)
     if glm:
         # Raios do GLM: desenhados no navegador e atualizados sozinhos (sem recarregar a página nem acionar o Streamlit).
-        inicial = glm_ao_vivo.dados_atuais(aguardar_s=12) if glm_ao_vivo else None  # no 1º acesso, espera a 1ª coleta (raios de antes da abertura)
+        inicial = _instantaneo_glm()  # no 1º acesso, espera a 1ª coleta (raios de antes da abertura)
         mapa.add_child(RaiosGLM(inicial, caminho_base=st.get_option("server.baseUrlPath") or ""))
     mapa.add_child(AjusteBrasil(LIMITES_BRASIL))
     mapa.get_root().html.add_child(Element(_legenda_mapa(cores, rotulo_hora, fonte, goes, glm, alcance)))

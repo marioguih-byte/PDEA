@@ -38,7 +38,7 @@ from typing import Any, Optional
 import numpy as np
 
 BUCKET = os.environ.get("PDEA_GLM_BUCKET", "noaa-goes19")  # GOES-East desde 07/04/2025
-VERSAO_GLM = "2026-10-08g"  # aparece no texto de ajuda do cartão do mapa (ajuda a ver qual coletor está rodando)
+VERSAO_GLM = "2026-10-08h"  # aparece no texto de ajuda do cartão do mapa (ajuda a ver qual coletor está rodando)
 JANELA_MIN = 20
 TENTATIVAS_ARQUIVO = 3  # um arquivo que falha é tentado de novo nas rodadas seguintes, até este número de vezes
 IDADE_MAX_ARQUIVO_S = 900  # ao ligar, um arquivo de dados mais velho que isto é considerado resto de execução antiga e descartado
