@@ -23,7 +23,7 @@ Painel em **Streamlit** que mostra, para as **27 capitais brasileiras**, o poten
 | **Regiões e variáveis extras** | O score usa CAPE × chuva. Fatores de CAPE por UF podem ser definidos em `config_regioes.json` (todos 1,0 por padrão). Lifted Index, CIN, rajada, gradiente 850–500 hPa e nível de 0 °C aparecem como cartões e gráficos no detalhe e no histórico, mas **não** entram no score. |
 | **Como o score foi calculado** | No detalhe de cada capital, uma tabela mostra o CAPE, a chuva prevista, o produto CAPE × chuva e o score final. |
 | **Camadas do mapa** | Divisas estaduais (ligadas por padrão), topos de nuvem do GOES-East (infravermelho, banda 13, via NASA GIBS, com controle de opacidade) e **raios observados pelo GLM** (ver abaixo). |
-| **Raios em tempo real (GLM)** | Flashes do GLM do GOES-East nos últimos 30 min, coloridos pela idade (até 5 min, 5 a 15 min, 15 a 30 min). Uma thread no servidor coleta os arquivos mais recentes do repositório público da NOAA a cada 5 min (minutos 0, 5, 10…) e grava `static/glm_flashes.txt`; o mapa busca o arquivo no navegador e redesenha **só a camada de raios**, sem recarregar a página nem acionar o Streamlit. Um cartão no mapa mostra o número de raios e a hora do dado mais recente. |
+| **Raios em tempo real (GLM)** | Flashes do GLM do GOES-East nos últimos 20 min, coloridos pela idade: **vermelho** (até 5 min), **laranja** (5 a 10), **amarelo** (10 a 15) e **verde** (15 a 20); depois de 20 min somem. Uma thread no servidor coleta os arquivos mais recentes do repositório público da NOAA a cada 5 min (minutos 0, 5, 10…) e grava `static/glm_flashes.txt`; o mapa busca o arquivo no navegador e redesenha **só a camada de raios**, sem recarregar a página nem acionar o Streamlit. Um cartão no mapa mostra o número de raios e a hora do dado mais recente. |
 | **Histórico** | Grava em SQLite, uma vez por hora e por modelo, CAPE, LI, CIN e variáveis extras das próximas 48 h. O painel mostra o score realizado e os gráficos de CAPE, LI, CIN e variáveis extras no período, como a previsão para um horário mudou entre execuções, e exporta CSV com score recalculado. |
 | **Exportação** | Tabela atual e séries horárias de 48 h em CSV (abre no Excel em português); mapa estático em PNG e relatório em PDF (mapa + ranking). |
 | **Acessibilidade** | Score escrito dentro da bolinha e barra lateral recolhida em telas pequenas. |
@@ -38,6 +38,8 @@ Painel em **Streamlit** que mostra, para as **27 capitais brasileiras**, o poten
 | `analise.py` | Séries de score, tendência, extras e fatores por UF (sem dependência do Streamlit). |
 | `historico.py` | Histórico das previsões em SQLite (módulo e linha de comando). |
 | `app_camadas.py` | Endereço e atribuição da camada GOES. |
+| `cadastro.py` | Cadastro de e-mail na entrada (validação, consentimento, registro em CSV e notificação por SMTP ao responsável). |
+| `.streamlit/secrets.toml.example` | Modelo dos Secrets do cadastro (destino, SMTP). Copie para `secrets.toml` ou cole nos Secrets do Streamlit; **nunca** suba preenchido ao GitHub. |
 | `glm_ao_vivo.py` | Coleta dos raios do GLM em segundo plano (a cada 5 min) e gravação de `static/glm_flashes.txt`. |
 | `assets/` | Logo do PDEA (`pdea_logo.png`) e ícone da aba (`pdea_icone.png`). |
 | `static/` | Pasta servida pelo Streamlit em `/app/static/` (`enableStaticServing`); recebe os arquivos dos raios. |
@@ -78,11 +80,23 @@ python validar.py --online --modelos # idem para os 12 modelos: mostra quais dev
 ## Raios em tempo real (GLM): detalhes
 
 - **Fonte:** arquivos GLM-L2-LCFA do bucket público `noaa-goes19` (GOES-East desde 07/04/2025), um arquivo a cada 20 s; a variável de ambiente `PDEA_GLM_BUCKET` troca o bucket.
+- **Raios de antes da abertura:** na primeira coleta (servidor recém-ligado ou acordado) o coletor busca no S3 todos os arquivos dos 20 min anteriores, e o mapa espera até 12 s por essa coleta. Quem abre o painel já vê os raios recentes, e não só os que ocorrem depois de abrir. Se ninguém abrir o app, nada é coletado, mas isso não perde dados dentro da janela: o GLM guarda os arquivos no S3 e a janela é reconstruída na abertura.
 - **O que se vê:** o GLM mede a atividade elétrica **total** (intranuvem e nuvem-solo), com eficiência de detecção que varia com a posição e o horário; os arquivos chegam ao S3 com atraso de alguns minutos. É observação por satélite, não previsão nem alerta.
-- **Sem recarregar:** o navegador consulta `glm_meta.txt` (poucos bytes) a cada 30 s e só baixa `glm_flashes.txt` quando há dado novo. Se o arquivo não puder ser lido, o mapa mantém o último desenho e o cartão mostra o horário do dado.
+- **Sem recarregar:** nos primeiros minutos de um servidor recém-ligado o navegador tenta a cada 5 s até a primeira coleta terminar; depois consulta `glm_meta.txt` (poucos bytes) a cada 30 s e só baixa `glm_flashes.txt` quando há dado novo. Se o arquivo não puder ser lido, o mapa mantém o último desenho e o cartão mostra o horário do dado.
 - **Requisitos:** `netCDF4` (em `requirements.txt`) e `server.enableStaticServing = true` (em `.streamlit/config.toml`). Sem eles o painel funciona, só sem a camada.
 - **Streamlit Community Cloud:** a coleta roda enquanto o app está ativo; quando o app hiberna por inatividade, a thread para, e a camada mostra "aguardando dados" até alguém acordar o app e a primeira coleta terminar (cerca de um minuto).
 - **Cuidado técnico:** a leitura NetCDF/HDF5 é feita um arquivo por vez, porque a biblioteca não é segura para várias threads.
+
+## Cadastro de e-mail na entrada
+
+Ao abrir o painel, o visitante informa o e-mail e marca o consentimento (com aviso de privacidade expansível). Só então o painel aparece, uma vez por sessão. A coleta dos raios do GLM já começa nessa tela, para os dados estarem prontos quando o painel abrir.
+
+1. **Configure** (Streamlit Community Cloud: *App settings > Secrets*; local: `.streamlit/secrets.toml`), seguindo `.streamlit/secrets.toml.example`: `destino` (e-mail que recebe os avisos), `smtp_user` e `smtp_pass`. No Gmail, `smtp_pass` é uma **senha de app** (Conta Google > Segurança > Verificação em duas etapas > Senhas de app); a senha normal não funciona.
+2. **Cada novo e-mail** gera uma mensagem ao `destino` com o e-mail, a data e a hora. O mesmo e-mail não gera aviso duas vezes; há um limite de 20 avisos por hora (o excedente segue no arquivo e vai junto no próximo aviso); se o envio falhar, o visitante entra mesmo assim e o e-mail vai no próximo aviso e em `cadastro/falhas_de_envio.log`.
+3. **Todos os cadastros** ficam também em `cadastro/cadastros.csv` (não versionado). No Streamlit Community Cloud o disco é apagado quando o app reinicia: a mensagem por e-mail é o registro durável.
+4. **Desligar** (por exemplo, no desenvolvimento): `ativo = false` nos Secrets ou a variável `PDEA_CADASTRO_ATIVO=false`.
+
+Limites: o e-mail **não é verificado** (qualquer endereço de formato válido entra; para confirmar a posse seria preciso enviar um código ao visitante), e o visitante precisa informá-lo de novo a cada sessão. O texto do aviso de privacidade é um modelo: revise-o (inclusive quem é o responsável e o contato para pedidos de remoção, `contato` nos Secrets) antes de publicar.
 
 ## Histórico
 

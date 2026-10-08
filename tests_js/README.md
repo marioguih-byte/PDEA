@@ -10,4 +10,5 @@ cd tests_js
 npm install leaflet jsdom
 python gerar_mapa_teste.py
 node teste_camada_glm.js
+node teste_envelhecimento.js   # cores por idade e desaparecimento após 20 min (relógio adiantado)
 ```

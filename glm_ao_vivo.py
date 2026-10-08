@@ -4,12 +4,14 @@ Como funciona
 -------------
 1. Uma thread em segundo plano (``AtualizadorGLM``) roda no servidor do painel. A cada 5 minutos ela lista no bucket público
    da NOAA (Amazon S3) os arquivos GLM-L2-LCFA mais recentes (um arquivo a cada 20 s), baixa só os que ainda não leu,
-   guarda os flashes dos últimos 30 minutos e grava o resultado em ``static/glm_flashes.txt`` (JSON em texto) e, depois, o minúsculo ``static/glm_meta.txt`` (só o instante da coleta).
+   guarda os flashes dos últimos 20 minutos e grava o resultado em ``static/glm_flashes.txt`` (JSON em texto) e, depois, o minúsculo ``static/glm_meta.txt`` (só o instante da coleta).
 2. O mapa (JavaScript, no navegador) busca esse arquivo de tempos em tempos e redesenha só a camada de raios, sem acionar o
    Streamlit. O Streamlit serve a pasta ``static/`` quando ``server.enableStaticServing = true`` (já em ``.streamlit/config.toml``).
 3. O primeiro desenho usa o instantâneo em memória (``dados_atuais()``), embutido no próprio mapa.
+4. Raios de antes da abertura: na primeira coleta (servidor recém-ligado ou acordado), o coletor busca no S3 TODOS os arquivos
+   da janela (os 20 min anteriores). Quem abre o painel já vê os raios recentes, e não só os que ocorrerem depois de abrir.
 
-Formato do arquivo (JSON): ``{"gerado": <epoch s>, "janela_min": 30, "ultimo_arquivo": <epoch s>, "arquivos": N,
+Formato do arquivo (JSON): ``{"gerado": <epoch s>, "janela_min": 20, "ultimo_arquivo": <epoch s>, "arquivos": N,
 "raios": [[lat, lon, idade_s], ...]}``, em que ``idade_s`` é a idade do flash no instante ``gerado``.
 
 Limites: o GLM mede a atividade elétrica total (intranuvem e nuvem-solo), tem eficiência de detecção que varia com a
@@ -33,7 +35,7 @@ from typing import Any, Optional
 import numpy as np
 
 BUCKET = os.environ.get("PDEA_GLM_BUCKET", "noaa-goes19")  # GOES-East desde 07/04/2025
-JANELA_MIN = 30
+JANELA_MIN = 20
 INTERVALO_S = 300
 MAX_RAIOS = 25000
 CAIXA_BRASIL = (-35.0, 7.0, -75.0, -32.0)  # lat_min, lat_max, lon_min, lon_max (com folga)
@@ -98,6 +100,7 @@ class AtualizadorGLM:
         self.ultimo: Optional[dict[str, Any]] = None
         self.ultimo_erro: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
+        self.primeira = threading.Event()  # sinaliza o fim da primeira coleta (com sucesso ou não)
 
     # -------------------------------------------------------------- coleta
     def _cli(self):
@@ -186,6 +189,8 @@ class AtualizadorGLM:
             self.ultimo_erro = None
         except Exception as exc:  # noqa: BLE001 - mantém o último arquivo bom e tenta de novo no próximo ciclo
             self.ultimo_erro = f"{type(exc).__name__}: {exc}"
+        finally:
+            self.primeira.set()
 
     def _laco(self) -> None:
         while True:
@@ -216,9 +221,15 @@ def obter_atualizador(iniciar: bool = True) -> AtualizadorGLM:
         return _UNICO
 
 
-def dados_atuais() -> Optional[dict[str, Any]]:
-    """Instantâneo mais recente em memória; se a coleta ainda não terminou, tenta ler o arquivo gravado."""
+def dados_atuais(aguardar_s: float = 0.0) -> Optional[dict[str, Any]]:
+    """Instantâneo mais recente em memória; se a coleta ainda não terminou, tenta ler o arquivo gravado.
+
+    ``aguardar_s``: tempo máximo (s) para esperar a PRIMEIRA coleta (servidor recém-ligado), para o mapa já abrir com os
+    raios dos últimos 20 min em vez de vazio.
+    """
     a = obter_atualizador(iniciar=False)
+    if not a.ultimo and aguardar_s > 0 and a._thread is not None and a._thread.is_alive():
+        a.primeira.wait(timeout=aguardar_s)
     if a.ultimo:
         return a.ultimo
     try:

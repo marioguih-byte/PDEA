@@ -24,14 +24,14 @@ const dorme = (ms) => new Promise(r => setTimeout(r, ms));
   const chip = () => w.document.querySelector(".pdea-glm-chip").textContent;
   const ok = (c, m) => { if (!c) { console.error("FALHOU:", m); process.exit(1); } };
 
-  // 1) servidor sem arquivo (404): usa o instantâneo embutido; o raio com mais de 30 min fica de fora; sem erros
-  ok(cont() === 3, "esperava 3 raios do instantâneo, veio " + cont());
-  ok(JSON.stringify(cores()) === JSON.stringify(["#e0401f", "#fff36b", "#ff9a1f"].sort()), "cores por idade: " + cores());
-  ok(/3 nos/.test(chip()), "chip: " + chip());
+  // 1) servidor sem arquivo (404): usa o instantâneo embutido; o raio com mais de 20 min fica de fora; sem erros
+  ok(cont() === 4, "esperava 4 raios do instantâneo, veio " + cont());
+  ok(JSON.stringify(cores()) === JSON.stringify(["#e11d1d", "#ff8a00", "#ffe000", "#2ecc40"].sort()), "vermelho, laranja, amarelo e verde por idade: " + cores());
+  ok(/4 nos/.test(chip()) && /20 min/.test(chip()), "chip: " + chip());
 
   // 2) o servidor passa a servir um arquivo novo (como se a coleta de 5 min tivesse rodado): o mapa atualiza sozinho
-  estadoArquivo = JSON.stringify({gerado: agora + 300, janela_min: 30, ultimo_arquivo: agora + 280, arquivos: 90,
-    raios: Array.from({length: 120}, (_, i) => [-10 + i * 0.05, -45, 30 + (i % 20) * 60])});
+  estadoArquivo = JSON.stringify({gerado: agora + 300, janela_min: 20, ultimo_arquivo: agora + 280, arquivos: 90,
+    raios: Array.from({length: 120}, (_, i) => [-10 + i * 0.05, -45, 30 + (i % 19) * 60])});
   await dorme(1200);
   ok(cont() === 120, "após a atualização, esperava 120, veio " + cont());
   ok(/120 nos/.test(chip()), "chip após atualização: " + chip());
@@ -50,7 +50,7 @@ const dorme = (ms) => new Promise(r => setTimeout(r, ms));
   ok(cont() === 120, "arquivo ruim não pode apagar a camada, veio " + cont());
 
   // 5) arquivo novo com 0 raios: camada esvazia e o chip mostra 0
-  estadoArquivo = JSON.stringify({gerado: agora + 600, janela_min: 30, ultimo_arquivo: agora + 580, arquivos: 90, raios: []});
+  estadoArquivo = JSON.stringify({gerado: agora + 600, janela_min: 20, ultimo_arquivo: agora + 580, arquivos: 90, raios: []});
   await dorme(1000);
   ok(cont() === 0 && /\b0 nos/.test(chip()), "esvaziar: " + cont() + " / " + chip());
   console.log("JS da camada GLM (Leaflet real em jsdom): OK  | arquivo grande:", contagem, "| meta:", contagemMeta);

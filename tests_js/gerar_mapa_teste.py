@@ -11,10 +11,10 @@ import folium  # noqa: E402
 import app  # noqa: E402
 
 agora = int(time.time())
-inicial = {"gerado": agora, "janela_min": 30, "ultimo_arquivo": agora - 60, "arquivos": 90,
-           "raios": [[-3.7, -38.5, 60], [-23.5, -46.6, 600], [-8.0, -35.0, 1500], [-10.0, -50.0, 2400]]}  # o último passa de 30 min
+inicial = {"gerado": agora, "janela_min": 20, "ultimo_arquivo": agora - 60, "arquivos": 90,
+           "raios": [[-3.7, -38.5, 60], [-23.5, -46.6, 400], [-8.0, -35.0, 700], [-10.0, -50.0, 1100], [-12.0, -48.0, 1300]]}  # o último passa de 20 min
 m = folium.Map(location=[-14, -52], zoom_start=4, tiles=None, zoom_control=False)
-m.add_child(app.RaiosGLM(inicial, caminho_base="", janela_s=1800, intervalo_ms=400))
+m.add_child(app.RaiosGLM(inicial, caminho_base="", janela_s=1200, intervalo_ms=400))
 html = m.get_root().render()
 html = re.sub(r"<script[^>]*src=[^>]*></script>", "", html)
 html = re.sub(r"<link[^>]*>", "", html)

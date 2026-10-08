@@ -25,6 +25,8 @@ from branca.element import Element, MacroElement
 from jinja2 import Template
 from streamlit_folium import st_folium
 
+import cadastro
+
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
 except Exception:  # noqa: BLE001 - sem o módulo/dependência, o painel só esconde a opção
@@ -259,9 +261,10 @@ class RaiosGLM(MacroElement):
             }
             function estilo(idadeS) {
                 var m = idadeS / 60;
-                if (m <= 5) { return {r: 4.5, f: '#fff36b', b: '#1f2933'}; }
-                if (m <= 15) { return {r: 3.5, f: '#ff9a1f', b: '#7a3a00'}; }
-                return {r: 3, f: '#e0401f', b: '#5c1409'};
+                if (m <= 5) { return {r: 4.5, f: '#e11d1d', b: '#5c0a0a'}; }    // vermelho: os mais recentes
+                if (m <= 10) { return {r: 4, f: '#ff8a00', b: '#6b3500'}; }     // laranja
+                if (m <= 15) { return {r: 3.5, f: '#ffe000', b: '#6b5a00'}; }   // amarelo
+                return {r: 3, f: '#2ecc40', b: '#0f5a1a'};                       // verde (15 a 20 min); depois some
             }
             function texto(n, d) {
                 var el = chip.getContainer();
@@ -338,13 +341,18 @@ class RaiosGLM(MacroElement):
             if (inicial && inicial.raios) { aplicar(inicial); }
             buscar();
             setInterval(buscar, INTERVALO_MS);       // consulta o arquivo de metadados (poucos bytes); só baixa e redesenha se mudou
-            setInterval(desenhar, 60000);            // as cores acompanham a idade dos raios
+            setInterval(desenhar, 30000);            // as cores acompanham a idade dos raios (e os de mais de 20 min somem)
+            var tentativas = 0;
+            var rapido = setInterval(function () {   // servidor recém-ligado: tenta a cada 5 s até a 1ª coleta terminar
+                tentativas += 1;
+                if (estado.dados || tentativas > 60) { clearInterval(rapido); } else { buscar(); }
+            }, 5000);
         })();
         {% endmacro %}
         """
     )
 
-    def __init__(self, inicial: Optional[dict], caminho_base: str = "", janela_s: int = 1800, intervalo_ms: int = 30000) -> None:
+    def __init__(self, inicial: Optional[dict], caminho_base: str = "", janela_s: int = 1200, intervalo_ms: int = 30000) -> None:
         super().__init__()
         self._name = "RaiosGLM"
         base = (caminho_base or "").rstrip("/")
@@ -449,9 +457,10 @@ def _legenda_mapa(cores: dict[str, str], rotulo_hora: str, fonte: str, goes: boo
     if glm:
         itens += (
             "<div class='rl-sub' style='margin:6px 0 2px'>&#9889; Raios observados (GLM), idade:</div>"
-            "<div class='rl-item'><span class='rl-raio' style='background:#fff36b'></span>até 5 min</div>"
-            "<div class='rl-item'><span class='rl-raio' style='background:#ff9a1f'></span>5 a 15 min</div>"
-            "<div class='rl-item'><span class='rl-raio' style='background:#e0401f'></span>15 a 30 min</div>"
+            "<div class='rl-item'><span class='rl-raio' style='background:#e11d1d'></span>até 5 min</div>"
+            "<div class='rl-item'><span class='rl-raio' style='background:#ff8a00'></span>5 a 10 min</div>"
+            "<div class='rl-item'><span class='rl-raio' style='background:#ffe000'></span>10 a 15 min</div>"
+            "<div class='rl-item'><span class='rl-raio' style='background:#2ecc40'></span>15 a 20 min</div>"
         )
     return f"""
     <style>
@@ -613,7 +622,7 @@ def criar_mapa(
 
     if glm:
         # Raios do GLM: desenhados no navegador e atualizados sozinhos (sem recarregar a página nem acionar o Streamlit).
-        inicial = glm_ao_vivo.dados_atuais() if glm_ao_vivo else None
+        inicial = glm_ao_vivo.dados_atuais(aguardar_s=12) if glm_ao_vivo else None  # no 1º acesso, espera a 1ª coleta (raios de antes da abertura)
         mapa.add_child(RaiosGLM(inicial, caminho_base=st.get_option("server.baseUrlPath") or ""))
     mapa.add_child(AjusteBrasil(LIMITES_BRASIL))
     mapa.get_root().html.add_child(Element(_legenda_mapa(cores, rotulo_hora, fonte, goes, glm)))
@@ -938,6 +947,7 @@ def renderizar_estilo() -> None:
         .logo-cartao img { display:block; height:auto; }
         .logo-lateral { width:100%; max-width:210px; }
         .logo-topo { height:64px; width:auto; }
+        .logo-entrada { height:92px; width:auto; }
         .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
         .marca-lateral { display:flex; align-items:center; gap:.6rem; margin-bottom:.1rem; }
         .marca-lateral .raio { width:2.1rem; height:2.1rem; border-radius:10px; display:grid; place-items:center; font-size:1.15rem; background:linear-gradient(135deg,#f5c518,#e0761f); box-shadow:0 4px 14px rgba(224,118,31,.35); }
@@ -1167,6 +1177,56 @@ def secao_mapa(tabela: pd.DataFrame, ctx: dict[str, Any], estilo: str, mostrar_s
         abrir_detalhamento(st.session_state["estacao_popup"], ctx)
 
 
+def _config_cadastro() -> "cadastro.ConfigCadastro":
+    """Configuração do cadastro de e-mail: Secrets do Streamlit (seção [cadastro]) ou variáveis de ambiente."""
+    try:
+        mapa = dict(st.secrets.get("cadastro", {}))
+    except Exception:  # noqa: BLE001 - sem arquivo de secrets, só as variáveis de ambiente valem
+        mapa = {}
+    return cadastro.ler_config(mapa)
+
+
+@st.cache_resource
+def _servico_cadastro() -> "cadastro.Cadastro":
+    return cadastro.Cadastro(_config_cadastro())
+
+
+def portao_de_entrada() -> None:
+    """Pede o e-mail na entrada (uma vez por sessão), com aviso de privacidade e consentimento. Interrompe a página até o cadastro."""
+    cfg = _config_cadastro()
+    if not cfg.ativo or st.session_state.get("cadastro_ok"):
+        return
+    st.markdown("<div style='height:6vh'></div>", unsafe_allow_html=True)
+    _, centro, _ = st.columns([1, 1.5, 1])
+    with centro:
+        st.markdown(f"<div class='logo-cartao'>{_html_logo('logo-entrada')}</div>", unsafe_allow_html=True)
+        st.subheader("Bem-vindo ao PDEA")
+        st.write("Informe seu e-mail para acessar o painel de previsão de descargas atmosféricas das capitais brasileiras.")
+        with st.form("cadastro_email", clear_on_submit=False):
+            email = st.text_input("Seu e-mail", placeholder="nome@exemplo.com", max_chars=254)
+            consentiu = st.checkbox("Concordo em fornecer meu e-mail para a finalidade descrita no aviso de privacidade.")
+            enviar = st.form_submit_button("Entrar no painel", type="primary", width="stretch")
+        with st.expander("Aviso de privacidade (LGPD)"):
+            remocao = f"escreva para {cfg.contato}" if cfg.contato else "entre em contato com o responsável pelo painel"
+            st.markdown(
+                "- **Finalidade:** saber quem usa o painel e, se necessário, entrar em contato sobre o projeto "
+                "(por exemplo, atualizações ou pesquisa de uso).\n"
+                "- **Base legal:** o seu consentimento (LGPD, art. 7º, I). Você pode não concordar, mas então não acessa o painel.\n"
+                "- **Como é tratado:** o e-mail é enviado por mensagem ao responsável pelo PDEA e guardado em arquivo no servidor do "
+                "painel. Passa pelos serviços de e-mail e de hospedagem usados pelo painel. Não é vendido nem usado para publicidade de terceiros.\n"
+                f"- **Remoção e dúvidas:** para pedir a exclusão do seu e-mail, {remocao}.\n"
+                "- O painel é uma previsão de modelo e não substitui alertas oficiais."
+            )
+        if enviar:
+            ok, resposta = _servico_cadastro().registrar(email, consentiu)
+            if ok:
+                st.session_state["cadastro_ok"] = True
+                st.rerun()
+            else:
+                st.error(resposta)
+    st.stop()
+
+
 @st.cache_resource
 def _iniciar_coleta_glm() -> bool:
     """Liga, uma única vez por processo do servidor, a coleta dos raios do GLM (a cada 5 min)."""
@@ -1179,7 +1239,8 @@ def _iniciar_coleta_glm() -> bool:
 def main() -> None:
     _inicializar_estado()
     renderizar_estilo()
-    _iniciar_coleta_glm()
+    _iniciar_coleta_glm()  # a coleta começa já na tela de cadastro: os raios estarão prontos quando o painel abrir
+    portao_de_entrada()
 
     # ------------------------------------------------------------------ barra lateral (controles)
     with st.sidebar:
@@ -1212,7 +1273,7 @@ def main() -> None:
             if glm_ao_vivo is not None:
                 glm = st.toggle(
                     "Raios em tempo real (GLM)", value=True,
-                    help="Flashes observados pelo GLM do GOES-East nos últimos 30 min. Atualiza sozinho a cada 5 min, sem recarregar a página. "
+                    help="Flashes observados pelo GLM do GOES-East nos últimos 20 min (vermelho = mais recentes, depois laranja, amarelo e verde; somem após 20 min). Atualiza sozinho a cada 5 min, sem recarregar a página. "
                          "O GLM mede a atividade elétrica total (intranuvem e nuvem-solo), com atraso de alguns minutos. É observação, não previsão.",
                 )
 
