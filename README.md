@@ -105,7 +105,7 @@ Limites: é um **contorno** de uma regra do plano gratuito, não um recurso gara
 
 ## Como confirmar a versão no ar
 
-A barra lateral mostra os créditos (Elaborado por: Mário Henrique e Mayara Christine). O número da versão fica só no texto de ajuda: passe o mouse sobre os créditos e aparece "Versão 2026-10-08h". Se não for esse, o que está rodando é uma cópia antiga: envie **todos** os arquivos ao GitHub (inclusive `glm_ao_vivo.py`, `assets/`, `static/`, `requirements.txt` e `.streamlit/config.toml`), com o `app.py` na **raiz** do repositório, e use *Manage app > Reboot app* no Streamlit.
+A barra lateral não tem mais o título "Painel meteorológico": entre a logo e o bloco *Dados* fica o cartão de créditos, centralizado e com a mesma faixa de cores do cabeçalho: "ELABORADO POR", seguido de cada responsável com o nome em destaque e o e-mail (link `mailto:`) logo abaixo. Os nomes ficam na lista `RESPONSAVEIS` do `app.py`. O número da versão fica só no texto de ajuda: passe o mouse sobre os créditos e aparece "Versão 2026-10-08i". Se não for esse, o que está rodando é uma cópia antiga: envie **todos** os arquivos ao GitHub (inclusive `glm_ao_vivo.py`, `assets/`, `static/`, `requirements.txt` e `.streamlit/config.toml`), com o `app.py` na **raiz** do repositório, e use *Manage app > Reboot app* no Streamlit.
 
 ## Raios em tempo real (GLM): detalhes
 

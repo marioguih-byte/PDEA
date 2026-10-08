@@ -7,10 +7,9 @@ Abre o painel em um Chromium de verdade (sem tela), com previsão e raios **simu
 - o botão *Fechar* fecha, e outra capital abre.
 
 ```bash
-cd tests_e2e
-npm install @sparticuz/chromium puppeteer-core leaflet@1.9.4 jquery
-streamlit run launcher_teste.py --server.headless true --server.port 8765 &   # em outro terminal, se preferir
-node teste_clique.mjs
+cd tests_e2e && npm install @sparticuz/chromium puppeteer-core leaflet@1.9.4 jquery && cd ..
+streamlit run tests_e2e/launcher_teste.py --server.headless true --server.port 8765 &   # na RAIZ do projeto (lê o tema de .streamlit/config.toml)
+cd tests_e2e && node teste_clique.mjs
 ```
 
 Foi este teste que mostrou, em 08/10/2026, por que o clique deixou de abrir o painel: o HTML do mapa mudava a cada execução (havia um

@@ -30,7 +30,12 @@ from streamlit_folium import st_folium
 # Carimbo de versão: fica no texto de ajuda (passar o mouse) dos créditos da barra lateral, para conferir qual cópia está no ar.
 # Alcance ao redor das capitais (km, cor): os mesmos raios usados na verificação contra o GLM. Linhas grossas e tracejadas.
 ALCANCES_KM = ((30, "#2ecc40"), (50, "#ffd400"), (100, "#e11d1d"))  # verde, amarelo, vermelho
-VERSAO_APP = "2026-10-08h"  # aparece só ao passar o mouse nos créditos da barra lateral
+# Responsáveis pela elaboração (aparecem em destaque na barra lateral).
+RESPONSAVEIS = (
+    ("Mário Henrique", "mario.vanderlei@icat.ufal.br"),
+    ("Mayara Christine", "mayara.lins@icat.ufal.br"),
+)
+VERSAO_APP = "2026-10-08i"  # aparece só ao passar o mouse nos créditos da barra lateral
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -1122,7 +1127,20 @@ def renderizar_estilo() -> None:
         [data-testid="stSidebar"] *::-webkit-scrollbar-thumb, [data-testid="stMain"]::-webkit-scrollbar-thumb, [data-testid="stAppViewContainer"] *::-webkit-scrollbar-thumb { background: #566274; border-radius: 10px; border: 3px solid #14171c; min-height: 48px; }
         [data-testid="stSidebar"] *::-webkit-scrollbar-thumb:hover, [data-testid="stMain"]::-webkit-scrollbar-thumb:hover, [data-testid="stAppViewContainer"] *::-webkit-scrollbar-thumb:hover { background: #7a889b; }
         @supports (-moz-appearance: none) { [data-testid="stSidebar"], [data-testid="stSidebar"] *, [data-testid="stMain"], [data-testid="stAppViewContainer"] { scrollbar-color: #566274 #14171c !important; } }
-        .creditos { font-size:.72rem; color:#9aa5b1; line-height:1.4; margin:.1rem 0 .5rem; overflow-wrap:anywhere; }
+        .creditos-card { position:relative; text-align:center; margin:1.05rem 0 1.15rem; padding:.85rem .6rem .8rem; overflow:hidden;
+            background:radial-gradient(220px 90px at 50% 0%, rgba(47,123,255,.20) 0%, rgba(47,123,255,0) 75%), linear-gradient(160deg,#232b38 0%,#1b2029 100%);
+            border:1px solid #38424f; border-radius:14px; box-shadow:0 6px 18px rgba(0,0,0,.30); }
+        .creditos-card::before { content:""; position:absolute; left:0; right:0; top:0; height:3px;
+            background:linear-gradient(90deg,#2f7bff 0%,#2ecc40 38%,#ffd400 62%,#ff8a00 82%,#e11d1d 100%); opacity:.9; }
+        .creditos-card .cr-titulo { display:flex; align-items:center; gap:.5rem; margin:.1rem .2rem .6rem; font-size:.62rem; font-weight:700;
+            letter-spacing:.16em; text-transform:uppercase; color:#9fb0c6; }
+        .creditos-card .cr-titulo::before, .creditos-card .cr-titulo::after { content:""; flex:1; height:1px; background:linear-gradient(90deg,transparent,#4a5668); }
+        .creditos-card .cr-titulo::after { transform:scaleX(-1); }
+        .creditos-card .cr-pessoa { display:flex; flex-direction:column; align-items:center; gap:.12rem; padding:.05rem 0; }
+        .creditos-card .cr-nome { font-size:.98rem; font-weight:750; color:#ffffff; letter-spacing:.01em; line-height:1.2; }
+        .creditos-card .cr-email { font-size:.71rem; color:#7fb0ff !important; text-decoration:none !important; overflow-wrap:anywhere; }
+        .creditos-card .cr-email:hover { color:#a9ccff !important; text-decoration:underline !important; }
+        .creditos-card .cr-sep { width:2.2rem; height:2px; margin:.55rem auto; border-radius:2px; background:linear-gradient(90deg,#2f7bff,#2ecc40); opacity:.8; }
         .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
         .marca-lateral { display:flex; align-items:center; gap:.6rem; margin-bottom:.1rem; }
         .marca-lateral .raio { width:2.1rem; height:2.1rem; border-radius:10px; display:grid; place-items:center; font-size:1.15rem; background:linear-gradient(135deg,#f5c518,#e0761f); box-shadow:0 4px 14px rgba(224,118,31,.35); }
@@ -1379,11 +1397,13 @@ def main() -> None:
             f"<div class='logo-cartao'>{_html_logo('logo-lateral')}</div>",
             unsafe_allow_html=True,
         )
-        st.caption("PAINEL METEOROLÓGICO")
+        pessoas = "<div class='cr-sep'></div>".join(
+            f"<div class='cr-pessoa'><span class='cr-nome'>{escape(nome)}</span>"
+            f"<a class='cr-email' href='mailto:{escape(email)}'>{escape(email)}</a></div>"
+            for nome, email in RESPONSAVEIS
+        )
         st.markdown(
-            f"<div class='creditos' title='Versão {escape(VERSAO_APP)}'>"
-            "Elaborado por: Mário Henrique | mario.vanderlei@icat.ufal.br<br>"
-            "Mayara Christine | mayara.lins@icat.ufal.br</div>",
+            f"<div class='creditos-card' title='Versão {escape(VERSAO_APP)}'><div class='cr-titulo'>Elaborado por</div>{pessoas}</div>",
             unsafe_allow_html=True,
         )
 

@@ -333,7 +333,10 @@ def testes_sem_cadastro() -> None:
         assert any("CAPITAIS" in str(c.value) for c in at.caption)  # o painel já aparece na primeira tela
         assert not any("e-mail" in str(t_.label).lower() for t_ in at.text_input)  # nenhum campo de e-mail
         md = " ".join(str(m.value) for m in at.markdown)
-        assert "Elaborado por: Mário Henrique | mario.vanderlei@icat.ufal.br" in md and "Mayara Christine | mayara.lins@icat.ufal.br" in md
+        assert "<div class='cr-titulo'>Elaborado por</div>" in md and "PAINEL METEOROLÓGICO" not in " ".join([md] + [str(c.value) for c in at.caption])
+        for nome, email in (("Mário Henrique", "mario.vanderlei@icat.ufal.br"), ("Mayara Christine", "mayara.lins@icat.ufal.br")):
+            assert f"<span class='cr-nome'>{nome}</span>" in md and f"href='mailto:{email}'>{email}</a>" in md
+        assert md.index("Mário Henrique") < md.index("Mayara Christine") and ".creditos-card" in md
         assert not any("Versão" in str(c.value) for c in at.caption)  # o carimbo saiu da tela (fica só no texto de ajuda dos créditos)
         # cabeçalho: logo com altura própria (a regra genérica da caixa do logo não pode anulá-la) e informações em cartões rótulo/valor
         assert "img.logo-topo { height:54px" in md and "img.logo-lateral" in md and ".logo-cartao img.logo-topo { height:44px" in md
