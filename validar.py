@@ -975,11 +975,11 @@ def testes_ajuste_nordeste() -> None:
 
     # texto do painel gerado a partir da configuração
     texto = pdea_app._texto_ajuste_chuva(gate)
-    assert all(x in texto for x in ("AL, AP, BA, CE, MA, PA, PB, PE, RN e SE", "Aracaju, Belém, Fortaleza, João Pessoa, Macapá, Maceió, Natal, Recife, Salvador e São Luís", "3 horas",
-                                    "1 mm/h", "0,25", "13,5 pontos", "máximo de uma capital ajustada **sem chuva prevista é 25**", "mais alto possível nessas capitais, sem chuva prevista, é **Baixo**",
-                                    "O documento usa o multiplicador 0,5; aqui ele é 0,25", "55", "provisórios",
-                                    "estendida a João Pessoa, Maceió e São Luís (também litorâneas e do Nordeste) e a Belém e Macapá (costa norte, na foz do Amazonas)", "Teresina (interior)", "RJ e SP"))
-    assert "Desligado" in pdea_app._texto_ajuste_chuva(GatePrecipitacao())
+    assert all(x in texto for x in ("10 capitais da costa norte e nordeste", "Aracaju, Belém, Fortaleza, João Pessoa, Macapá, Maceió, Natal, Recife, Salvador e São Luís",
+                                    "3 horas", "1 mm/h", "0,25", "54 pontos", "13,5 pontos", "não passa de 25 (nível máximo: Baixo)", "Romps et al., 2014", "provisórios"))
+    # texto para o público: sem detalhes internos (documento de origem, nome antigo, arquivo de configuração, lista de estados, decisões da equipe)
+    assert not any(x in texto for x in ("RUSBÉ", "documento", "config_regioes", "gate_precipitacao", "ufs", "estendida", "Teresina", "AL, AP", "escolha", "equipe", "0,5;"))
+    assert "não está ativo" in pdea_app._texto_ajuste_chuva(GatePrecipitacao()).lower()
 
     # histórico: o score recalculado também leva o ajuste (só no heurístico), igual ao painel
     import historico

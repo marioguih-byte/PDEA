@@ -39,7 +39,7 @@ RESPONSAVEIS = (
 MODELO_PADRAO = "best_match"
 NOME_FONTE = "Open-Meteo API"
 # Método do score: o padrão (CAPE × chuva, Romps et al.) ou a heurística por faixas de CAPE, Lifted Index e CIN (PDEA-H).
-VERSAO_APP = "2026-10-08r"  # aparece só ao passar o mouse nos créditos da barra lateral
+VERSAO_APP = "2026-10-08s"  # aparece só ao passar o mouse nos créditos da barra lateral
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -1052,54 +1052,35 @@ def _html_metodo_heuristico() -> str:
 
 
 def _texto_ajuste_chuva(gate: Any) -> str:
-    """Seção "Ajuste por chuva prevista nas capitais do litoral do Norte e do Nordeste", com os valores lidos de config_regioes.json (iguais aos do cálculo)."""
+    """Seção pública "Ajuste por chuva prevista", com os valores lidos da configuração (sempre iguais aos do cálculo)."""
     if not gate.ufs:
-        return "**Ajuste por chuva prevista.** Desligado nesta configuração (nenhuma UF listada em `gate_precipitacao`)."
-    capitais = _lista_e([e["nome"] for e in sorted(ESTACOES, key=lambda e: e["nome"]) if e["uf"] in gate.ufs])
+        return "**Ajuste por chuva prevista.** Não está ativo nesta configuração."
+    nomes = [e["nome"] for e in sorted(ESTACOES, key=lambda e: e["nome"]) if e["uf"] in gate.ufs]
     inicio_alto = next(limite for limite, rotulo, _ in NIVEIS_RISCO if rotulo == "Moderado")
-    ufs_documento = {"BA", "CE", "PE", "RN", "SE"}  # lista do documento de origem (RUSBÉ, seção 5.4)
-    ufs_nordeste = {"AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE"}
-    fora_doc = [e for e in sorted(ESTACOES, key=lambda e: e["nome"]) if e["uf"] in gate.ufs and e["uf"] not in ufs_documento]
-    ne_extras = [e["nome"] for e in fora_doc if e["uf"] in ufs_nordeste]
-    norte_extras = [e["nome"] for e in fora_doc if e["uf"] not in ufs_nordeste]
-    partes = []
-    if ne_extras:
-        partes.append(f"{_lista_e(ne_extras)} (também litorâneas e do Nordeste)")
-    if norte_extras:
-        partes.append(f"{_lista_e(norte_extras)} (costa norte, na foz do Amazonas)")
-    extras_txt = " e a ".join(partes)
     maximo = 100 * gate.multiplicador
     ex_pontos = detalhar_risco(2000.0, -4.0, -30.0, ParametrosRisco(metodo="pontos"))["score"]
     ex_ajust, ex_nivel_aj = calcular_risco(2000.0, -4.0, -30.0, ParametrosRisco(metodo="pontos"), None, gate.multiplicador)[:2]
     ex_nivel = calcular_risco(2000.0, -4.0, -30.0, ParametrosRisco(metodo="pontos"))[1]
     texto = (
-        f"**Ajuste por chuva prevista nas capitais do litoral do Norte e do Nordeste.** Nas capitais dos estados {_lista_e(sorted(gate.ufs))} ({capitais}), o score "
-        f"só vale integralmente se o modelo prevê chuva. Para cada hora, toma-se a **maior chuva prevista entre a hora e as {gate.janela_h} "
-        f"horas seguintes** (ignorando valores ausentes): se ela for **menor que {_br(gate.limiar_mm_h)} mm/h**, o score é multiplicado por "
-        f"**{_br(gate.multiplicador)}**; caso contrário, fica como está. **Sem dado de precipitação, o ajuste não é aplicado**, para não "
-        "esconder risco por falta de dado. O ajuste só vale no método heurístico: no CAPE × chuva a chuva já faz parte do produto.\n\n"
-        f"*Exemplo:* o mesmo ambiente do primeiro exemplo ({ex_pontos:.0f} pontos, {ex_nivel}) numa capital ajustada sem chuva prevista "
-        f"fica com {_br(round(ex_ajust, 1))} pontos ({ex_nivel_aj}); com chuva de {_br(gate.limiar_mm_h)} mm/h ou mais, continua com {ex_pontos:.0f}.\n\n"
+        f"**Ajuste por chuva prevista.** Em {len(nomes)} capitais da costa norte e nordeste ({_lista_e(nomes)}), o score só vale "
+        f"integralmente se o modelo prevê chuva. Para cada hora, toma-se a maior chuva prevista entre a hora e as {gate.janela_h} horas "
+        f"seguintes: se ela for menor que {_br(gate.limiar_mm_h)} mm/h, o score é multiplicado por {_br(gate.multiplicador)}; caso "
+        "contrário, fica como está. Sem dado de precipitação, o ajuste não é aplicado, para não esconder risco por falta de dado. Ele faz "
+        "parte do método heurístico; no método CAPE × chuva a chuva já está no cálculo.\n\n"
+        f"*Exemplo:* um ambiente de {ex_pontos:.0f} pontos ({ex_nivel}), numa dessas capitais, fica com {_br(round(ex_ajust, 1))} pontos "
+        f"({ex_nivel_aj}) quando não há chuva prevista e continua com {ex_pontos:.0f} quando há.\n\n"
     )
     if maximo < inicio_alto:
         nivel_max = next(rotulo for limite, rotulo, _ in NIVEIS_RISCO if maximo < limite)
         texto += (
-            f"*Consequência:* como a soma máxima é 100, o score máximo de uma capital ajustada **sem chuva prevista é {_br(maximo)}**, e o nível "
-            f"mais alto possível nessas capitais, sem chuva prevista, é **{nivel_max}** (abaixo do início do nível Alto, {inicio_alto}); "
-            "portanto não geram alerta no nível padrão.\n\n"
+            f"*Efeito:* sem chuva prevista, o score dessas capitais não passa de {_br(maximo)} (nível máximo: {nivel_max}); níveis mais "
+            "altos só aparecem quando há chuva prevista.\n\n"
         )
     texto += (
-        "*Motivo:* o produto CAPE × chuva explica a maior parte da variação das descargas (Romps et al., 2014) e a chuva por descarga é muito "
-        "maior em regimes tropicais marítimos (Petersen e Rutledge, 1998; Zipser, 1994), de modo que CAPE e LI altos sem chuva prevista, perto "
-        "do mar, tendem a superestimar o risco.\n\n"
-        "*Origem e extensão:* a regra vem da documentação técnica do RUSBÉ, que a aplica a BA, CE, PE, RN e SE."
-        + (f" O documento usa o multiplicador 0,5; aqui ele é {_br(gate.multiplicador)} (escolha provisória, para que capitais de costa tropical sem "
-           "chuva prevista não fiquem em risco constante)." if abs(gate.multiplicador - 0.5) > 1e-9 else "")
-        + (f" Aqui ela foi **estendida a {extras_txt}**." if extras_txt else "")
-        + " Teresina (interior) e as capitais de outras regiões não são ajustadas; o documento aponta as demais regiões costeiras (por exemplo RJ "
-        "e SP) como ponto a avaliar com observações. Limiar, janela, multiplicador e a lista de estados são **provisórios**, sem validação "
-        "com observações, e ficam em `config_regioes.json` (seção `gate_precipitacao`; esvaziar `ufs` desliga o ajuste, e acrescentar UFs "
-        "o estende)."
+        "*Por quê:* perto do mar, CAPE e Lifted Index altos podem ocorrer sem chuva e sem tempestade. O produto CAPE × chuva explica a maior "
+        "parte da variação das descargas (Romps et al., 2014) e a chuva por descarga é muito maior em regimes tropicais marítimos (Petersen e "
+        "Rutledge, 1998; Zipser, 1994); por isso, sem chuva prevista, o risco tende a ser superestimado. O limiar, a janela e o fator do "
+        "ajuste são provisórios e estão em calibração com observações de raios (GLM)."
     )
     return texto
 
@@ -1900,7 +1881,7 @@ def main() -> None:
     with st.expander("Método heurístico (CAPE, LI e CIN): como funciona"):
         ex1, ex2 = _exemplos_heuristica()
         st.markdown(
-            "**O que é.** É o método padrão do painel (PDEA-H). Ele avalia três parâmetros de instabilidade do perfil atmosférico "
+            "**O que é.** É o método padrão do painel. Ele avalia três parâmetros de instabilidade do perfil atmosférico "
             "previsto, **CAPE**, **Lifted Index (LI)** e **CIN**, e **soma pontos** por faixas. O score é essa soma, limitada a 0-100, "
             "e os níveis (Nenhum a Severo) são os mesmos do método CAPE × chuva. A chuva prevista não entra na soma; ela só aparece no "
             "ajuste por chuva, descrito mais abaixo."
@@ -1920,19 +1901,15 @@ def main() -> None:
         st.markdown(_texto_ajuste_chuva(gate), unsafe_allow_html=False)
         st.markdown(
             "**Limites e cuidados.**\n\n"
-            "- As faixas são **empíricas**: foram definidas pela equipe do PDEA a partir de valores usuais de CAPE, LI e CIN, sem um artigo "
-            "de referência específico, e **ainda não foram calibradas** com os raios observados no Brasil; os níveis são provisórios, "
-            "como no método padrão.\n"
-            "- Fora das capitais com o ajuste por chuva, a chuva prevista não entra no score: ele pode indicar risco alto onde o modelo "
-            "não prevê chuva (e baixo onde há chuva com pouco CAPE).\n"
-            "- O ajuste por chuva é uma regra simples e provisória: limiar, janela e multiplicador não foram calibrados, e a extensão do "
-            "ajuste a Maceió, João Pessoa e São Luís (fora da lista do documento de origem) ainda não foi validada com observações. Outras "
-            "regiões costeiras (por exemplo RJ e SP) não têm o ajuste.\n"
-            "- Não aplica a correção das capitais litorâneas do método CAPE × chuva.\n"
+            "- As faixas de pontos são **empíricas** (baseadas em valores usuais de CAPE, LI e CIN) e **ainda não foram calibradas** com os "
+            "raios observados no Brasil; os níveis são provisórios.\n"
+            "- Fora das capitais com ajuste por chuva, a chuva prevista não entra no score: ele pode indicar risco onde o modelo não prevê "
+            "chuva (e risco baixo onde há chuva com pouco CAPE).\n"
+            "- O ajuste por chuva é uma regra simples e provisória, e outras regiões costeiras não o têm.\n"
             "- Como o método CAPE × chuva, não captura convecção com pouco CAPE (por exemplo, sistemas frontais) e é uma previsão de modelo, "
             "não uma detecção: não substitui alertas oficiais.\n"
             "- O método CAPE × chuva tem base na literatura (Romps et al., 2014, 2018), enquanto as faixas deste método são empíricas. "
-            "A validação dos dois contra o GLM está em andamento."
+            "A validação dos dois contra observações de raios (GLM) está em andamento."
         )
 
     with st.expander(f"Fonte dos dados: {NOME_FONTE}"):
