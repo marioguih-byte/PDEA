@@ -122,8 +122,8 @@
     ],
     "limiar_mm_h": 1.0,
     "janela_h": 3,
-    "multiplicador": 0.5,
-    "nota": "Ajuste por chuva prevista nas capitais do litoral do Norte e do Nordeste. Origem: documentação técnica do RUSBÉ, seção 5.4, que aplica a regra a BA, CE, PE, RN e SE. Estendida a Maceió (AL), João Pessoa (PB) e São Luís (MA), também litorâneas e do Nordeste, e a Macapá (AP) e Belém (PA), na foz do Amazonas: Macapá apareceu como a capital de maior risco (54) sem raios do GLM por perto. Teresina (PI, interior) e as demais regiões costeiras (por exemplo RJ e SP, que o documento aponta como pendentes) ficam de fora. Vale SÓ para o método heurístico: nas UFs listadas, o score é multiplicado por 'multiplicador' quando a chuva máxima prevista entre a hora e +'janela_h' h é menor que 'limiar_mm_h'. Sem dado de precipitação o ajuste não é aplicado. Valores provisórios, sem validação com observações. Esvazie 'ufs' para desligar; acrescente UFs para estender."
+    "multiplicador": 0.25,
+    "nota": "Ajuste por chuva prevista nas capitais do litoral do Norte e do Nordeste. Origem: documentação técnica do RUSBÉ, seção 5.4, que aplica a regra a BA, CE, PE, RN e SE. Estendida a Maceió (AL), João Pessoa (PB) e São Luís (MA), também litorâneas e do Nordeste, e a Macapá (AP) e Belém (PA), na foz do Amazonas: Macapá apareceu como a capital de maior risco (54) sem raios do GLM por perto. Teresina (PI, interior) e as demais regiões costeiras (por exemplo RJ e SP, que o documento aponta como pendentes) ficam de fora. Vale SÓ para o método heurístico: nas UFs listadas, o score é multiplicado por 'multiplicador' quando a chuva máxima prevista entre a hora e +'janela_h' h é menor que 'limiar_mm_h'. Sem dado de precipitação o ajuste não é aplicado. O documento usa multiplicador 0,5; aqui foi adotado 0,25 (escolha provisória, para que ambientes de costa tropical sem chuva prevista não fiquem em risco constante: sem chuva prevista o score máximo passa a 25, nível Baixo). Valores provisórios, sem validação com observações. Esvazie 'ufs' para desligar; acrescente UFs para estender."
   },
   "correcao_costeira": {
     "fator": 0.4,

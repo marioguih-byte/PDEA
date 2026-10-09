@@ -848,7 +848,8 @@ def testes_metodo_heuristico() -> None:
         md = " ".join(str(m.value) for m in at.markdown)
         assert "<span class='pl'>Método</span><b>Heurístico (CAPE, LI e CIN)</b>" in md
         assert f"<b>{cap_heur}</b>" in md and f"{score_heur:.1f}/100" in md          # destaque = maior score do método heurístico
-        assert any("Método heurístico" in str(i.value) and "multiplicado por 0,5" in str(i.value) for i in at.info)  # aviso, com o ajuste do Nordeste
+        assert not any("Método heurístico" in str(i.value) for i in at.info)   # sem aviso azul acima do mapa (a explicação fica no bloco do fim da página)
+        assert not any("não está sendo aplicado" in str(w.value) for w in at.sidebar.warning)
         assert any("Método heurístico (CAPE, LI e CIN): como funciona" in str(e.label) for e in at.expander)
         assert "Open-Meteo API · Heurístico (CAPE, LI e CIN)" in mapas[-1].get_root().render()   # legenda do mapa traz o método
 
@@ -858,7 +859,7 @@ def testes_metodo_heuristico() -> None:
         md = " ".join(str(m.value) for m in at.markdown)
         assert "<span class='pl'>Método</span><b>CAPE × chuva</b>" in md
         assert f"<b>{cap_padrao}</b>" in md and f"{score_padrao:.1f}/100" in md        # destaque = maior score do CAPE × chuva
-        assert not any("Método heurístico" in str(i.value) for i in at.info)            # sem o aviso do heurístico
+        assert not any("Método heurístico" in str(i.value) for i in at.info)
         assert "Open-Meteo API · CAPE × chuva" in mapas[-1].get_root().render()
         assert at.session_state["metodo_score"] == rot_c
 
@@ -878,7 +879,8 @@ def testes_metodo_heuristico() -> None:
         modelos.buscar_modelo = lambda *a, **k: dados
         st.cache_data.clear()
         at = AppTest.from_file("app.py", default_timeout=90).run()
-        assert not at.exception and not any("Sem dados de precipitação" in str(w.value) for w in at.sidebar.warning)
+        assert not at.exception and not any("CAPE × chuva não pode ser calculado" in str(w.value) for w in at.sidebar.warning)
+        assert any("ajuste por chuva" in str(w.value) and "não está sendo aplicado" in str(w.value) for w in at.sidebar.warning)  # avisa: o ajuste não age sem a chuva
         md = " ".join(str(m.value) for m in at.markdown)
         assert "Maior risco em" in md and "Sem dados de risco" not in md
         at.radio(key="metodo_score").set_value(rot_c).run()
@@ -904,7 +906,7 @@ def testes_ajuste_nordeste() -> None:
     from analise import GatePrecipitacao, carregar_gate, explicar_hora, gate_efetivo, janela_frente, series_por_unidade
 
     gate = carregar_gate()
-    assert gate.ufs == frozenset({"AL", "AP", "BA", "CE", "MA", "PA", "PB", "PE", "RN", "SE"}) and (gate.limiar_mm_h, gate.janela_h, gate.multiplicador) == (1.0, 3, 0.5)
+    assert gate.ufs == frozenset({"AL", "AP", "BA", "CE", "MA", "PA", "PB", "PE", "RN", "SE"}) and (gate.limiar_mm_h, gate.janela_h, gate.multiplicador) == (1.0, 3, 0.25)
     h, c = rr.ParametrosRisco(metodo="pontos"), rr.ParametrosRisco(metodo="capexp")
     assert rr.METODO_PADRAO == "pontos"
 
@@ -930,7 +932,7 @@ def testes_ajuste_nordeste() -> None:
     for e in ESTACOES:
         capital, uf = e["nome"], e["uf"]
         if uf in gate.ufs:
-            assert s_seco[capital] == 27.0 and s_chuva[capital] == 54.0 and s_sem[capital] == 54.0, (capital, s_seco[capital])  # metade sem chuva
+            assert s_seco[capital] == 13.5 and s_chuva[capital] == 54.0 and s_sem[capital] == 54.0, (capital, s_seco[capital])  # um quarto sem chuva
         else:
             assert s_seco[capital] == s_chuva[capital] == s_sem[capital] == 54.0, (capital, uf)  # fora da lista nada muda (inclui PI, RJ, ES, SC, SP)
     assert {"PI", "RJ", "ES", "SC", "SP"}.isdisjoint(gate.ufs)  # interior do Nordeste e outras regiões costeiras: sem o ajuste
@@ -948,7 +950,7 @@ def testes_ajuste_nordeste() -> None:
     ausentes = serie([None, None, None, 2.0] + [None] * (n - 4))
     ce = nome["CE"]
     um = lambda s_: series_por_unidade(dados_de(s_), h, None, gate)[ce]["rel"]  # noqa: E731
-    assert um(chuva_em_3h)[0] == 54.0 and um(chuva_em_4h)[0] == 27.0 and um(chuva_em_4h)[1] == 54.0 and um(fraca)[0] == 27.0 and um(ausentes)[0] == 54.0
+    assert um(chuva_em_3h)[0] == 54.0 and um(chuva_em_4h)[0] == 13.5 and um(chuva_em_4h)[1] == 54.0 and um(fraca)[0] == 13.5 and um(ausentes)[0] == 54.0
     assert janela_frente([0.0, None, 2.0, 0.0], 1) == [0.0, 2.0, 2.0, 0.0]
 
     # consequência documentada: sem chuva prevista, uma capital ajustada chega a 50 no máximo (abaixo de 55) e nunca é Alto nem Severo
@@ -958,11 +960,11 @@ def testes_ajuste_nordeste() -> None:
             for cin in (-10, -40, -80, -150, -250):
                 sc = rr.calcular_risco(cape, li, cin, h, None, gate.multiplicador)
                 maior, niveis = max(maior, sc[0]), niveis | {sc[1]}
-    assert maior == 50.0 and not ({"Alto", "Severo"} & niveis) and "Severo" in {rr.calcular_risco(4000, -10, -10, h)[1]}
+    assert maior == 25.0 and not ({"Moderado", "Alto", "Severo"} & niveis) and "Severo" in {rr.calcular_risco(4000, -10, -10, h)[1]}
 
     # a explicação da hora (painel da capital) e a série concordam, e a coluna "Ajuste" da tabela marca o score reduzido
     ex = explicar_hora(seco, 0, "CE", h, None, gate)
-    assert ex["gate_aplicado"] and ex["multiplicador"] == 0.5 and abs(ex["score"] - 27.0) < 1e-9 and ex["subtotal"] == 54.0
+    assert ex["gate_aplicado"] and ex["multiplicador"] == 0.25 and abs(ex["score"] - 13.5) < 1e-9 and ex["subtotal"] == 54.0
     ex_c = explicar_hora(seco, 0, "CE", c, None, gate)
     assert not ex_c["gate_aplicado"] and not ex_c["gate_configurado"]  # no CAPE × chuva o ajuste não aparece
     tabela = analise.consolidar(dados_de(seco), series_por_unidade(dados_de(seco), h, None, gate), 0)
@@ -974,7 +976,8 @@ def testes_ajuste_nordeste() -> None:
     # texto do painel gerado a partir da configuração
     texto = pdea_app._texto_ajuste_chuva(gate)
     assert all(x in texto for x in ("AL, AP, BA, CE, MA, PA, PB, PE, RN e SE", "Aracaju, Belém, Fortaleza, João Pessoa, Macapá, Maceió, Natal, Recife, Salvador e São Luís", "3 horas",
-                                    "1 mm/h", "0,5", "27 pontos", "máximo de uma capital ajustada **sem chuva prevista é 50**", "55", "provisórios",
+                                    "1 mm/h", "0,25", "13,5 pontos", "máximo de uma capital ajustada **sem chuva prevista é 25**", "mais alto possível nessas capitais, sem chuva prevista, é **Baixo**",
+                                    "O documento usa o multiplicador 0,5; aqui ele é 0,25", "55", "provisórios",
                                     "estendida a João Pessoa, Maceió e São Luís (também litorâneas e do Nordeste) e a Belém e Macapá (costa norte, na foz do Amazonas)", "Teresina (interior)", "RJ e SP"))
     assert "Desligado" in pdea_app._texto_ajuste_chuva(GatePrecipitacao())
 
@@ -987,7 +990,7 @@ def testes_ajuste_nordeste() -> None:
 
     df = pd.DataFrame([linha(nome["CE"], 0.0), linha(nome["RJ"], 0.0), linha(nome["PE"], 2.0), linha(nome["BA"], None)])
     sc_h = dict(zip(df["unidade"], historico._com_score(df, h, None)["score"]))
-    assert sc_h[nome["CE"]] == 27.0 and sc_h[nome["RJ"]] == 54.0 and sc_h[nome["PE"]] == 54.0 and sc_h[nome["BA"]] == 54.0  # sem dado de chuva: não age
+    assert sc_h[nome["CE"]] == 13.5 and sc_h[nome["RJ"]] == 54.0 and sc_h[nome["PE"]] == 54.0 and sc_h[nome["BA"]] == 54.0  # sem dado de chuva: não age
     sc_c = historico._com_score(df.assign(precip=2.0), c, None)["score"]
     assert sc_c.notna().all() and historico._com_score(df, c, None)["score"].equals(historico._com_score(df, c, None, GatePrecipitacao())["score"])  # gate ignorado no CAPE × chuva
 
@@ -1060,7 +1063,7 @@ def testes_ampliados() -> None:
     from analise import GatePrecipitacao
 
     g0 = carregar_gate()  # ajuste por chuva no Nordeste, ligado na configuração entregue (valores da seção 5.4 do RUSBÉ)
-    assert g0.ufs == frozenset({"AL", "AP", "BA", "CE", "MA", "PA", "PB", "PE", "RN", "SE"}) and g0.limiar_mm_h == 1.0 and g0.janela_h == 3 and g0.multiplicador == 0.5
+    assert g0.ufs == frozenset({"AL", "AP", "BA", "CE", "MA", "PA", "PB", "PE", "RN", "SE"}) and g0.limiar_mm_h == 1.0 and g0.janela_h == 3 and g0.multiplicador == 0.25
     gate = GatePrecipitacao(ufs=frozenset({"CE", "RN", "PE", "SE", "BA"}), limiar_mm_h=1.0, janela_h=3, multiplicador=0.5)
     assert {"CE", "RN", "PE", "SE", "BA"} <= set(gate.ufs) and "RJ" not in gate.ufs and gate.multiplicador == 0.5
     assert multiplicador_do_gate(0.0, "CE", gate) == 0.5 and multiplicador_do_gate(0.5, "CE", gate) == 0.5

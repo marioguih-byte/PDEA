@@ -39,7 +39,7 @@ RESPONSAVEIS = (
 MODELO_PADRAO = "best_match"
 NOME_FONTE = "Open-Meteo API"
 # Método do score: o padrão (CAPE × chuva, Romps et al.) ou a heurística por faixas de CAPE, Lifted Index e CIN (PDEA-H).
-VERSAO_APP = "2026-10-08o"  # aparece só ao passar o mouse nos créditos da barra lateral
+VERSAO_APP = "2026-10-08r"  # aparece só ao passar o mouse nos créditos da barra lateral
 
 try:  # raios do GLM em tempo real: precisa de requests, numpy e netCDF4
     import glm_ao_vivo
@@ -1079,19 +1079,22 @@ def _texto_ajuste_chuva(gate: Any) -> str:
         f"**{_br(gate.multiplicador)}**; caso contrário, fica como está. **Sem dado de precipitação, o ajuste não é aplicado**, para não "
         "esconder risco por falta de dado. O ajuste só vale no método heurístico: no CAPE × chuva a chuva já faz parte do produto.\n\n"
         f"*Exemplo:* o mesmo ambiente do primeiro exemplo ({ex_pontos:.0f} pontos, {ex_nivel}) numa capital ajustada sem chuva prevista "
-        f"fica com {ex_ajust:.0f} pontos ({ex_nivel_aj}); com chuva de {_br(gate.limiar_mm_h)} mm/h ou mais, continua com {ex_pontos:.0f}.\n\n"
+        f"fica com {_br(round(ex_ajust, 1))} pontos ({ex_nivel_aj}); com chuva de {_br(gate.limiar_mm_h)} mm/h ou mais, continua com {ex_pontos:.0f}.\n\n"
     )
     if maximo < inicio_alto:
+        nivel_max = next(rotulo for limite, rotulo, _ in NIVEIS_RISCO if maximo < limite)
         texto += (
-            f"*Consequência:* como a soma máxima é 100, o score máximo de uma capital ajustada **sem chuva prevista é {maximo:.0f}**, abaixo do "
-            f"início do nível Alto ({inicio_alto}). Nessas capitais, sem chuva prevista, os níveis Alto e Severo não ocorrem (e não geram "
-            "alerta no nível padrão).\n\n"
+            f"*Consequência:* como a soma máxima é 100, o score máximo de uma capital ajustada **sem chuva prevista é {_br(maximo)}**, e o nível "
+            f"mais alto possível nessas capitais, sem chuva prevista, é **{nivel_max}** (abaixo do início do nível Alto, {inicio_alto}); "
+            "portanto não geram alerta no nível padrão.\n\n"
         )
     texto += (
         "*Motivo:* o produto CAPE × chuva explica a maior parte da variação das descargas (Romps et al., 2014) e a chuva por descarga é muito "
         "maior em regimes tropicais marítimos (Petersen e Rutledge, 1998; Zipser, 1994), de modo que CAPE e LI altos sem chuva prevista, perto "
         "do mar, tendem a superestimar o risco.\n\n"
         "*Origem e extensão:* a regra vem da documentação técnica do RUSBÉ, que a aplica a BA, CE, PE, RN e SE."
+        + (f" O documento usa o multiplicador 0,5; aqui ele é {_br(gate.multiplicador)} (escolha provisória, para que capitais de costa tropical sem "
+           "chuva prevista não fiquem em risco constante)." if abs(gate.multiplicador - 0.5) > 1e-9 else "")
         + (f" Aqui ela foi **estendida a {extras_txt}**." if extras_txt else "")
         + " Teresina (interior) e as capitais de outras regiões não são ajustadas; o documento aponta as demais regiões costeiras (por exemplo RJ "
         "e SP) como ponto a avaliar com observações. Limiar, janela, multiplicador e a lista de estados são **provisórios**, sem validação "
@@ -1657,6 +1660,13 @@ def main() -> None:
             f"({dados.get('_erro_extras') or 'sem detalhe'}). Tente atualizar os dados em instantes ou escolha o método heurístico, que não usa a chuva."
         )
 
+    if not extras_disponiveis and metodo_id_score == "pontos" and gate.ufs:
+        st.sidebar.warning(
+            f"Sem dados de precipitação da {NOME_FONTE} ({dados.get('_erro_extras') or 'sem detalhe'}): o ajuste por chuva das capitais do "
+            "litoral do Norte e do Nordeste **não está sendo aplicado**, e o score dessas capitais pode estar alto demais. "
+            "Tente atualizar os dados em instantes."
+        )
+
     fonte = NOME_FONTE
 
     # ------------------------------------------------------------------ áreas da página (ordem visual)
@@ -1785,13 +1795,6 @@ def main() -> None:
         if sem_dados:
             texto += f" ({sem_dados} capital(is) sem dados.)"
         st.markdown(f"<div class='destaque' style='--cor:{cor_destaque}'>{texto}</div>", unsafe_allow_html=True)
-        if metodo_id_score == "pontos":
-            ajuste_ne = ""
-            if gate.ufs:
-                ajuste_ne = (f" Nas capitais do litoral do Norte e do Nordeste ({_lista_e(sorted(gate.ufs))}), o score é multiplicado por {_br(gate.multiplicador)} quando o modelo não prevê "
-                             f"chuva (≥ {_br(gate.limiar_mm_h)} mm/h) nas próximas {gate.janela_h} h.")
-            st.info("**Método heurístico:** o score soma pontos por faixas de CAPE, Lifted Index e CIN." + ajuste_ne +
-                    " A explicação está no bloco *Método heurístico* no fim da página.")
         st.markdown("<div class='secao'>Mapa das capitais</div>", unsafe_allow_html=True)
 
     # ------------------------------------------------------------------ mapa (fragmento)
@@ -1880,7 +1883,7 @@ def main() -> None:
     with st.expander("Como interpretar o painel"):
         st.write(
             "Há dois métodos de score (barra lateral, bloco *Método do score*). **Heurístico (padrão):** soma pontos por faixas de CAPE, "
-            "Lifted Index e CIN e, nas capitais do litoral do Norte e do Nordeste, reduz o score à metade quando o modelo não prevê chuva (explicação no bloco *Método "
+            "Lifted Index e CIN e, nas capitais do litoral do Norte e do Nordeste, reduz fortemente o score quando o modelo não prevê chuva (explicação no bloco *Método "
             "heurístico*, logo abaixo). **CAPE × chuva:** estima o potencial de descargas em cada capital a partir do produto CAPE × taxa "
             "de chuva previstos pelo modelo numérico, um indicador da taxa de descargas descrito por Romps et al. (2014, 2018): sem energia "
             "(CAPE) ou sem chuva prevista, o score é baixo. Esse método foi validado sobre terra nos Estados Unidos e, globalmente, sobre "

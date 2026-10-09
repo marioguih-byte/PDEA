@@ -98,7 +98,7 @@ for (let i = 0; i < 25 && !outra; i++) { outra = await p.evaluate(() => document
 if (!outra) { await p.screenshot({path: "falha_outra.png"}); falha("o painel não abriu na segunda capital"); }
 console.log("4) segunda capital: painel abriu");
 
-// O método padrão é o HEURÍSTICO: o painel já abre com o cartão "Método" e o aviso do heurístico.
+// O método padrão é o HEURÍSTICO: o painel já abre com o cartão "Método" mostrando o heurístico (não há aviso azul acima do mapa).
 async function fecharPainel() {
   await p.evaluate(() => { const b = [...document.querySelectorAll("button")].find(x => x.innerText.trim() === "Fechar"); if (b) b.click(); });
   for (let i = 0; i < 15 && await p.evaluate(() => document.body.innerText.includes("Como o score foi calculado")); i++) await dorme(1000);
@@ -107,11 +107,10 @@ async function escolherMetodo(trecho) {
   await p.evaluate(t => { const l = [...document.querySelectorAll('[data-testid="stSidebar"] label')].find(x => x.innerText.includes(t)); l.click(); }, trecho);
 }
 const metodoNaTela = (nome) => p.evaluate(n => new RegExp("M[ÉE]TODO\\s*\\n?\\s*" + n, "i").test(document.body.innerText), nome);
-const avisoHeuristico = () => p.evaluate(() => document.body.innerText.includes("Método heurístico:"));
 async function esperar(condicao, tentativas = 40) { for (let i = 0; i < tentativas; i++) { if (await condicao()) return true; await dorme(1000); } return false; }
 
-if (!(await metodoNaTela("Heurístico \\(CAPE, LI e CIN\\)")) || !(await avisoHeuristico())) falha("o painel não abriu no método heurístico (padrão)");
-console.log("5) o painel abre no método heurístico (padrão): cartão Método e aviso");
+if (!(await metodoNaTela("Heurístico \\(CAPE, LI e CIN\\)"))) falha("o painel não abriu no método heurístico (padrão)");
+console.log("5) o painel abre no método heurístico (padrão): cartão Método");
 
 // 5b) ajuste por chuva no Nordeste: o painel de Fortaleza (CE), aberto pela lista da barra lateral, mostra os pontos e a linha "Chuva prevista"
 await fecharPainel();
@@ -145,21 +144,21 @@ if (!(await abrirPelaLista("Macapá")) || !(await linhaDoAjuste())) { await p.sc
 console.log("5e) painel de Macapá (AP): ajuste por chuva presente");
 await fecharPainel();
 
-// 6) trocar para CAPE × chuva: o aviso some, o cartão muda e o painel da capital mostra a tabela do produto (sem a soma de pontos)
+// 6) trocar para CAPE × chuva: o cartão muda e o painel da capital mostra a tabela do produto (sem a soma de pontos)
 await escolherMetodo("CAPE × chuva");
-if (!(await esperar(async () => !(await avisoHeuristico()) && await metodoNaTela("CAPE × chuva")))) { await p.screenshot({path: "falha_metodo.png"}); falha("a troca para CAPE × chuva não apareceu no cabeçalho e no aviso"); }
+if (!(await esperar(async () => await metodoNaTela("CAPE × chuva")))) { await p.screenshot({path: "falha_metodo.png"}); falha("a troca para CAPE × chuva não apareceu no cabeçalho"); }
 mapa = await acharMapa();
 await dorme(2500);
 await abrirPainelPorBolinha(mapa, 0);
 const tabelaProduto = await esperar(() => p.evaluate(() => { const t = document.body.innerText; return t.includes("Como o score foi calculado") && t.includes("escala logarítmica") && !t.includes("Soma"); }), 30);
 if (!tabelaProduto) { await p.screenshot({path: "falha_tabela_produto.png"}); falha("o painel da capital não mostrou a tabela do CAPE × chuva"); }
-console.log("6) CAPE × chuva: aviso some, cartão muda e o painel mostra o produto CAPE × chuva");
+console.log("6) CAPE × chuva: cartão muda e o painel mostra o produto CAPE × chuva");
 await fecharPainel();
 
-// 7) voltar ao heurístico restaura o aviso e o cartão
+// 7) voltar ao heurístico restaura o cartão
 await escolherMetodo("Heurístico");
-if (!(await esperar(async () => (await avisoHeuristico()) && await metodoNaTela("Heurístico \\(CAPE, LI e CIN\\)")))) falha("a volta ao método heurístico não apareceu");
-console.log("7) volta ao método heurístico: aviso e cartão restaurados");
+if (!(await esperar(async () => await metodoNaTela("Heurístico \\(CAPE, LI e CIN\\)")))) falha("a volta ao método heurístico não apareceu");
+console.log("7) volta ao método heurístico: cartão restaurado");
 if (erros.length) console.log("avisos de JS (informativo):", erros.slice(0, 3));
 console.log("TESTE DE NAVEGADOR: OK");
 await b.close();
