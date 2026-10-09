@@ -840,50 +840,50 @@ def testes_metodo_heuristico() -> None:
         cap_heur, score_heur, tab_heur = esperado(dados, "pontos")
         assert not np.allclose(tab_padrao.set_index("Capital")["Score"].reindex(tab_heur["Capital"]).values, tab_heur["Score"].values)  # os métodos de fato diferem
 
+        rot_h, rot_c = "Heurístico: CAPE, LI e CIN (padrão)", "CAPE × chuva"
         at = AppTest.from_file("app.py", default_timeout=90).run()
         assert not at.exception, [e.value for e in at.exception][:2]
         radio = at.radio(key="metodo_score")
-        assert list(radio.options) == ["CAPE × chuva (padrão)", "Heurístico: CAPE, LI e CIN"] and radio.value == "CAPE × chuva (padrão)"
-        md = " ".join(str(m.value) for m in at.markdown)
-        assert "<span class='pl'>Método</span><b>CAPE × chuva</b>" in md
-        assert f"<b>{cap_padrao}</b>" in md and f"{score_padrao:.1f}/100" in md      # destaque = maior score do método padrão
-        assert not any("Método heurístico" in str(i.value) for i in at.info)
-        assert any("Método heurístico (CAPE, LI e CIN): como funciona" in str(e.label) for e in at.expander)
-        assert "Open-Meteo API · CAPE × chuva" in mapas[-1].get_root().render()          # legenda do mapa traz o método
-
-        # troca para o heurístico
-        radio.set_value("Heurístico: CAPE, LI e CIN").run()
-        assert not at.exception, [e.value for e in at.exception][:2]
+        assert rr.METODO_PADRAO == "pontos" and list(radio.options) == [rot_h, rot_c] and radio.value == rot_h  # o heurístico é o padrão
         md = " ".join(str(m.value) for m in at.markdown)
         assert "<span class='pl'>Método</span><b>Heurístico (CAPE, LI e CIN)</b>" in md
-        assert f"<b>{cap_heur}</b>" in md and f"{score_heur:.1f}/100" in md             # destaque = maior score do método heurístico
-        assert any("Método heurístico" in str(i.value) for i in at.info)                 # aviso acima do mapa
-        assert "Open-Meteo API · Heurístico (CAPE, LI e CIN)" in mapas[-1].get_root().render()
-        assert at.session_state["metodo_score"] == "Heurístico: CAPE, LI e CIN"
+        assert f"<b>{cap_heur}</b>" in md and f"{score_heur:.1f}/100" in md          # destaque = maior score do método heurístico
+        assert any("Método heurístico" in str(i.value) and "multiplicado por 0,5" in str(i.value) for i in at.info)  # aviso, com o ajuste do Nordeste
+        assert any("Método heurístico (CAPE, LI e CIN): como funciona" in str(e.label) for e in at.expander)
+        assert "Open-Meteo API · Heurístico (CAPE, LI e CIN)" in mapas[-1].get_root().render()   # legenda do mapa traz o método
 
-        # janela da capital: a tabela mostra os componentes do método escolhido
+        # troca para o CAPE × chuva
+        radio.set_value(rot_c).run()
+        assert not at.exception, [e.value for e in at.exception][:2]
+        md = " ".join(str(m.value) for m in at.markdown)
+        assert "<span class='pl'>Método</span><b>CAPE × chuva</b>" in md
+        assert f"<b>{cap_padrao}</b>" in md and f"{score_padrao:.1f}/100" in md        # destaque = maior score do CAPE × chuva
+        assert not any("Método heurístico" in str(i.value) for i in at.info)            # sem o aviso do heurístico
+        assert "Open-Meteo API · CAPE × chuva" in mapas[-1].get_root().render()
+        assert at.session_state["metodo_score"] == rot_c
+
+        # janela da capital: a tabela mostra os componentes do método em uso (abre no padrão = heurístico)
         clique["valor"] = "Fortaleza"
         at = AppTest.from_file("app.py", default_timeout=90).run()
-        at.radio(key="metodo_score").set_value("Heurístico: CAPE, LI e CIN").run()
         md = " ".join(str(m.value) for m in at.markdown)
         assert "Método: Heurístico (CAPE, LI e CIN)" in " ".join(str(c.value) for c in at.caption)
         assert "<td>Lifted Index</td>" in md and "<td><b>Soma</b></td>" in md and "<td>CAPE × chuva</td>" not in md
-        at.radio(key="metodo_score").set_value("CAPE × chuva (padrão)").run()
+        at.radio(key="metodo_score").set_value(rot_c).run()
         md = " ".join(str(m.value) for m in at.markdown)
         assert "<td>CAPE × chuva</td>" in md and "<td><b>Soma</b></td>" not in md
         clique["valor"] = None
 
-        # sem chuva prevista: o método padrão não calcula (e avisa); o heurístico não depende de chuva e segue funcionando
+        # sem chuva prevista: o heurístico (padrão) segue funcionando e não avisa; o CAPE × chuva não calcula e avisa
         dados = dados_variados(com_chuva=False)
         modelos.buscar_modelo = lambda *a, **k: dados
         st.cache_data.clear()
         at = AppTest.from_file("app.py", default_timeout=90).run()
-        assert any("Sem dados de precipitação" in str(w.value) and "método heurístico" in str(w.value) for w in at.sidebar.warning)
-        assert any("Sem dados de risco" in str(m.value) for m in at.markdown)
-        at.radio(key="metodo_score").set_value("Heurístico: CAPE, LI e CIN").run()
         assert not at.exception and not any("Sem dados de precipitação" in str(w.value) for w in at.sidebar.warning)
         md = " ".join(str(m.value) for m in at.markdown)
         assert "Maior risco em" in md and "Sem dados de risco" not in md
+        at.radio(key="metodo_score").set_value(rot_c).run()
+        assert any("Sem dados de precipitação" in str(w.value) and "método heurístico" in str(w.value) for w in at.sidebar.warning)
+        assert any("Sem dados de risco" in str(m.value) for m in at.markdown)
     finally:
         modelos.buscar_modelo, streamlit_folium.st_folium = original
         import streamlit as st
@@ -894,6 +894,130 @@ def testes_metodo_heuristico() -> None:
         else:
             os.environ["PDEA_HISTORICO"] = antigo
     print("Testes do método heurístico (faixas idênticas, explicação gerada do código, troca de método, sem chuva): OK")
+
+
+def testes_ajuste_nordeste() -> None:
+    """Ajuste por chuva prevista no Nordeste (RUSBÉ, seção 5.4): vale só para o método heurístico, na janela de 3 h, sem dado não age."""
+    import analise
+    import app as pdea_app
+    import risco_raio as rr
+    from analise import GatePrecipitacao, carregar_gate, explicar_hora, gate_efetivo, janela_frente, series_por_unidade
+
+    gate = carregar_gate()
+    assert gate.ufs == frozenset({"AL", "AP", "BA", "CE", "MA", "PA", "PB", "PE", "RN", "SE"}) and (gate.limiar_mm_h, gate.janela_h, gate.multiplicador) == (1.0, 3, 0.5)
+    h, c = rr.ParametrosRisco(metodo="pontos"), rr.ParametrosRisco(metodo="capexp")
+    assert rr.METODO_PADRAO == "pontos"
+
+    # o ajuste só existe para o método heurístico (no CAPE × chuva a chuva já está no produto: não corrige duas vezes)
+    assert gate_efetivo(gate, h) is gate and gate_efetivo(gate, c).ufs == frozenset() and gate_efetivo(None, h) is None
+
+    n = 30
+
+    def serie(precip, cape=2000.0):  # ambiente com 54 pontos no heurístico (CAPE 2000: +22, LI -4: +22, CIN -30: +10)
+        d = {"tempos": [f"2026-10-08T{h_ % 24:02d}:00" for h_ in range(n)], "idx_atual": 0, "cape": [cape] * n, "li": [-4.0] * n, "cin": [-30.0] * n}
+        if precip is not None:
+            d["precip"] = precip
+        return d
+
+    seco, chuva, sem = serie([0.0] * n), serie([2.0] * n), serie(None)
+    nome = {uf: next(e["nome"] for e in ESTACOES if e["uf"] == uf) for uf in {e["uf"] for e in ESTACOES}}
+
+    def dados_de(serie_):
+        return {e["nome"]: serie_ for e in ESTACOES}
+
+    por_capital = lambda s_, p, g: {k: v["rel"][0] for k, v in series_por_unidade(dados_de(s_), p, None, g).items()}  # noqa: E731
+    s_seco, s_chuva, s_sem = por_capital(seco, h, gate), por_capital(chuva, h, gate), por_capital(sem, h, gate)
+    for e in ESTACOES:
+        capital, uf = e["nome"], e["uf"]
+        if uf in gate.ufs:
+            assert s_seco[capital] == 27.0 and s_chuva[capital] == 54.0 and s_sem[capital] == 54.0, (capital, s_seco[capital])  # metade sem chuva
+        else:
+            assert s_seco[capital] == s_chuva[capital] == s_sem[capital] == 54.0, (capital, uf)  # fora da lista nada muda (inclui PI, RJ, ES, SC, SP)
+    assert {"PI", "RJ", "ES", "SC", "SP"}.isdisjoint(gate.ufs)  # interior do Nordeste e outras regiões costeiras: sem o ajuste
+    assert {"BA", "CE", "PE", "RN", "SE"} < gate.ufs and {"AL", "MA", "PB", "AP", "PA"} <= gate.ufs  # as 5 do documento + Maceió, João Pessoa, São Luís, Macapá e Belém
+    # regra da lista: capitais litorâneas do Nordeste (a lista da correção litorânea restrita ao Nordeste) + Macapá e Belém (foz do Amazonas)
+    import json as _json
+
+    costeiras = set(_json.loads((Path(__file__).resolve().parent / "config_regioes.json").read_text(encoding="utf-8"))["correcao_costeira"]["ufs"])
+    assert gate.ufs == (costeiras & {"AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE"}) | {"AP", "PA"}
+
+    # janela: a chuva dentro das próximas 3 h (hora atual até +3) basta; chuva fraca (< 1 mm/h) não basta; valores ausentes são ignorados
+    chuva_em_3h = serie([0.0, 0.0, 0.0, 1.0] + [0.0] * (n - 4))     # 1 mm/h exatamente em +3 h: mantém
+    chuva_em_4h = serie([0.0, 0.0, 0.0, 0.0, 5.0] + [0.0] * (n - 5))  # em +4 h: fora da janela da hora 0
+    fraca = serie([0.9] * n)
+    ausentes = serie([None, None, None, 2.0] + [None] * (n - 4))
+    ce = nome["CE"]
+    um = lambda s_: series_por_unidade(dados_de(s_), h, None, gate)[ce]["rel"]  # noqa: E731
+    assert um(chuva_em_3h)[0] == 54.0 and um(chuva_em_4h)[0] == 27.0 and um(chuva_em_4h)[1] == 54.0 and um(fraca)[0] == 27.0 and um(ausentes)[0] == 54.0
+    assert janela_frente([0.0, None, 2.0, 0.0], 1) == [0.0, 2.0, 2.0, 0.0]
+
+    # consequência documentada: sem chuva prevista, uma capital ajustada chega a 50 no máximo (abaixo de 55) e nunca é Alto nem Severo
+    maior, niveis = 0.0, set()
+    for cape in range(0, 5001, 100):
+        for li in (4, 2, 0, -2, -6, -9, -12):
+            for cin in (-10, -40, -80, -150, -250):
+                sc = rr.calcular_risco(cape, li, cin, h, None, gate.multiplicador)
+                maior, niveis = max(maior, sc[0]), niveis | {sc[1]}
+    assert maior == 50.0 and not ({"Alto", "Severo"} & niveis) and "Severo" in {rr.calcular_risco(4000, -10, -10, h)[1]}
+
+    # a explicação da hora (painel da capital) e a série concordam, e a coluna "Ajuste" da tabela marca o score reduzido
+    ex = explicar_hora(seco, 0, "CE", h, None, gate)
+    assert ex["gate_aplicado"] and ex["multiplicador"] == 0.5 and abs(ex["score"] - 27.0) < 1e-9 and ex["subtotal"] == 54.0
+    ex_c = explicar_hora(seco, 0, "CE", c, None, gate)
+    assert not ex_c["gate_aplicado"] and not ex_c["gate_configurado"]  # no CAPE × chuva o ajuste não aparece
+    tabela = analise.consolidar(dados_de(seco), series_por_unidade(dados_de(seco), h, None, gate), 0)
+    ajuste = dict(zip(tabela["Capital"], tabela["Ajuste chuva"]))
+    assert ajuste[ce] == "reduzido" and ajuste[nome["AL"]] == "reduzido" and ajuste[nome["AP"]] == "reduzido" and ajuste[nome["RJ"]] == "" and ajuste[nome["PI"]] == ""
+    tabela_c = analise.consolidar(dados_de(seco), series_por_unidade(dados_de(seco), c, None, gate), 0)
+    assert set(tabela_c["Ajuste chuva"]) == {""}  # sem ajuste no CAPE × chuva
+
+    # texto do painel gerado a partir da configuração
+    texto = pdea_app._texto_ajuste_chuva(gate)
+    assert all(x in texto for x in ("AL, AP, BA, CE, MA, PA, PB, PE, RN e SE", "Aracaju, Belém, Fortaleza, João Pessoa, Macapá, Maceió, Natal, Recife, Salvador e São Luís", "3 horas",
+                                    "1 mm/h", "0,5", "27 pontos", "máximo de uma capital ajustada **sem chuva prevista é 50**", "55", "provisórios",
+                                    "estendida a João Pessoa, Maceió e São Luís (também litorâneas e do Nordeste) e a Belém e Macapá (costa norte, na foz do Amazonas)", "Teresina (interior)", "RJ e SP"))
+    assert "Desligado" in pdea_app._texto_ajuste_chuva(GatePrecipitacao())
+
+    # histórico: o score recalculado também leva o ajuste (só no heurístico), igual ao painel
+    import historico
+
+    def linha(unidade, chuva_):
+        return {"modelo": "best_match", "execucao": "2026-10-08T12:00", "unidade": unidade, "valido": "2026-10-08T12:00", "horas": 0, "cape": 2000.0,
+                "li": -4.0, "cin": -30.0, "precip": chuva_, "rajada": 10.0, "nivel0": 4800.0, "t850": 18.0, "t500": -8.0}
+
+    df = pd.DataFrame([linha(nome["CE"], 0.0), linha(nome["RJ"], 0.0), linha(nome["PE"], 2.0), linha(nome["BA"], None)])
+    sc_h = dict(zip(df["unidade"], historico._com_score(df, h, None)["score"]))
+    assert sc_h[nome["CE"]] == 27.0 and sc_h[nome["RJ"]] == 54.0 and sc_h[nome["PE"]] == 54.0 and sc_h[nome["BA"]] == 54.0  # sem dado de chuva: não age
+    sc_c = historico._com_score(df.assign(precip=2.0), c, None)["score"]
+    assert sc_c.notna().all() and historico._com_score(df, c, None)["score"].equals(historico._com_score(df, c, None, GatePrecipitacao())["score"])  # gate ignorado no CAPE × chuva
+
+    # alertas: o método padrão é o heurístico (igual ao painel), com o ajuste; --metodo capexp muda o cálculo e a mensagem
+    import contextlib
+    import io
+
+    import alertas
+    import modelos
+
+    seco_dados = {**dados_de(seco), "_hora_referencia": "03:00 (08/10)", "_extras": True, "_obtido_em": datetime.now(modelos.TZ_BRASILIA).isoformat()}
+    original_busca = alertas.buscar_modelo
+    alertas.buscar_modelo = lambda *_a, **_k: seco_dados
+    try:
+        def rodar(*argumentos):
+            saida = io.StringIO()
+            with contextlib.redirect_stdout(saida), tempfile.TemporaryDirectory() as pasta_estado:
+                alertas.main(["--dry-run", "--estado", str(Path(pasta_estado) / "estado.json"), *argumentos])
+            return saida.getvalue()
+        padrao = rodar("--nivel", "Moderado", "--antecedencia", "0")
+        assert "escore heurístico de CAPE/LI/CIN, com ajuste por chuva nas capitais do litoral do Norte e do Nordeste" in padrao
+        assert f"• {nome['RJ']} (RJ): Moderado" in padrao and nome["CE"] not in padrao  # RJ 54 (Moderado); CE ajustado 27 (Baixo): sem alerta
+        chuva_dados = {**dados_de(chuva), "_hora_referencia": "03:00 (08/10)", "_extras": True, "_obtido_em": seco_dados["_obtido_em"]}
+        alertas.buscar_modelo = lambda *_a, **_k: chuva_dados  # com chuva prevista o CAPE × chuva também gera alertas
+        cx = rodar("--metodo", "capexp", "--nivel", "Moderado", "--antecedencia", "0")
+        assert "escore CAPE × chuva" in cx and "ajuste por chuva" not in cx
+    finally:
+        alertas.buscar_modelo = original_busca
+    assert "escore heurístico" in alertas.montar_mensagem([], "t", "r") and "escore CAPE × chuva" in alertas.montar_mensagem([], "t", "r", "capexp")
+    print("Testes do ajuste por chuva no Nordeste (só no heurístico, janela de 3 h, sem dado não age, máximo 50, explicação): OK")
 
 
 def testes_ampliados() -> None:
@@ -935,7 +1059,8 @@ def testes_ampliados() -> None:
     assert janela_frente([0, 0, 2, 0, 0, 0], 2) == [2, 2, 2, 0, 0, 0] and janela_frente([None, None], 1) == [None, None]
     from analise import GatePrecipitacao
 
-    assert carregar_gate().ufs == frozenset()  # no PDEA o gate vem desligado: a chuva já faz parte do escore (CAPE x chuva)
+    g0 = carregar_gate()  # ajuste por chuva no Nordeste, ligado na configuração entregue (valores da seção 5.4 do RUSBÉ)
+    assert g0.ufs == frozenset({"AL", "AP", "BA", "CE", "MA", "PA", "PB", "PE", "RN", "SE"}) and g0.limiar_mm_h == 1.0 and g0.janela_h == 3 and g0.multiplicador == 0.5
     gate = GatePrecipitacao(ufs=frozenset({"CE", "RN", "PE", "SE", "BA"}), limiar_mm_h=1.0, janela_h=3, multiplicador=0.5)
     assert {"CE", "RN", "PE", "SE", "BA"} <= set(gate.ufs) and "RJ" not in gate.ufs and gate.multiplicador == 0.5
     assert multiplicador_do_gate(0.0, "CE", gate) == 0.5 and multiplicador_do_gate(0.5, "CE", gate) == 0.5
@@ -1120,6 +1245,7 @@ if __name__ == "__main__":
     testes_concorrencia()
     testes_fonte_open_meteo()
     testes_metodo_heuristico()
+    testes_ajuste_nordeste()
     testes_ampliados()
     if "--online" in sys.argv:
         from modelos import ErroBuscaModelo

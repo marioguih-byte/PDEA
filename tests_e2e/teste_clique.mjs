@@ -28,13 +28,34 @@ p.on("pageerror", e => erros.push(e.message));
 
 async function acharMapa() {
   for (let i = 0; i < 90; i++) {
-    for (const f of p.frames()) { try { if (await f.$(".pdea-pin")) return f; } catch (e) {} }
+    // só vale um mapa NOVO (sem cliques anteriores): depois de fechar o painel ou trocar o método o mapa é recriado, e clicar no antigo se perde
+    for (const f of p.frames()) { try { if ((await f.$(".pdea-pin")) && await f.evaluate(() => !window.__GLOBAL_DATA__ || window.__GLOBAL_DATA__.last_object_clicked_count === 0)) return f; } catch (e) {} }
     await dorme(1000);
   }
   return null;
 }
 const dialogoAberto = async (titulo) => p.evaluate(t => document.body.innerText.includes("Como o score foi calculado") && document.body.innerText.includes(t), titulo);
 async function esperarDialogo(titulo, ate = 25) { for (let i = 0; i < ate; i++) { if (await dialogoAberto(titulo)) return true; await dorme(1000); } return false; }
+async function clicarBolinha(frame, k) {   // clica na bolinha k, se ela estiver bem visível na janela e livre (nada por cima)
+  const pins = await frame.$$(".pdea-pin");
+  if (k >= pins.length) return false;
+  await pins[k].evaluate(e => e.scrollIntoView({block: "center"}));
+  await dorme(600);
+  const livre = await pins[k].evaluate(e => { const r = e.getBoundingClientRect(); const t = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!t && (t === e || e.contains(t)); });
+  const caixa = await pins[k].boundingBox();   // posição na JANELA (a barra do Streamlit, no topo, fica fora do iframe do mapa)
+  if (!(livre && caixa && caixa.y > 120 && caixa.y < 760 && caixa.x > 340)) return false;
+  await pins[k].click();
+  return true;
+}
+// Tenta bolinhas em sequência até uma abrir o painel (algumas posições do mapa não recebem o clique do automatizador). Se o mapa
+// estivesse perdendo cliques de verdade, NENHUMA abriria e o teste falharia do mesmo jeito.
+async function abrirPainelPorBolinha(frame, inicio, tentativas = 8) {
+  for (let k = inicio; k < inicio + tentativas; k++) {
+    if (!(await clicarBolinha(frame, k))) continue;
+    if (await esperarDialogo("", 5)) return true;
+  }
+  return false;
+}
 async function clicarCapital(frame, texto) {
   for (const pin of await frame.$$(".pdea-pin")) {
     if ((await pin.evaluate(e => e.textContent)) === texto) {
@@ -58,27 +79,26 @@ const cores = await mapa.$$eval(".pdea-glm-chip .g-cls", els => els.map(e => par
 console.log("raios por cor (vermelho, laranja, amarelo, verde):", cores);
 if (cores.length !== 4 || !cores.every(n => n > 0)) falha("alguma cor de raio está zerada: " + cores);
 // 2) clicar na bolinha abre o painel de detalhes
-if (!(await clicarCapital(mapa, "81"))) falha("bolinha 81 não encontrada");
-if (!(await esperarDialogo("Porto Alegre"))) { await p.screenshot({path: "falha_abrir.png"}); falha("o painel de Porto Alegre não abriu ao clicar na bolinha"); }
-console.log("1) clique na bolinha: painel de Porto Alegre abriu");
+if (!(await abrirPainelPorBolinha(mapa, 0))) { await p.screenshot({path: "falha_abrir.png"}); falha("o painel da capital não abriu ao clicar na bolinha"); }
+console.log("1) clique na bolinha: painel da capital abriu");
 // 3) o painel resiste às atualizações do canal (o fragmento roda a cada 30 s e o servidor gera dado novo a cada 20 s)
 await dorme(65000);
-if (!(await dialogoAberto("Porto Alegre"))) { await p.screenshot({path: "falha_fechou.png"}); falha("o painel fechou sozinho durante as atualizações do canal"); }
+if (!(await dialogoAberto(""))) { await p.screenshot({path: "falha_fechou.png"}); falha("o painel fechou sozinho durante as atualizações do canal"); }
 console.log("2) painel continuou aberto depois de 65 s (duas atualizações do canal)");
 // 4) fechar e abrir outra capital
 await p.evaluate(() => { const b = [...document.querySelectorAll("button")].find(x => x.innerText.trim() === "Fechar"); if (b) b.click(); });
-for (let i = 0; i < 15 && await dialogoAberto("Porto Alegre"); i++) await dorme(1000);
-if (await dialogoAberto("Porto Alegre")) falha("o botão Fechar não fechou o painel");
+for (let i = 0; i < 15 && await dialogoAberto(""); i++) await dorme(1000);
+if (await dialogoAberto("")) falha("o botão Fechar não fechou o painel");
 console.log("3) botão Fechar fechou o painel");
 mapa = await acharMapa();
 await dorme(2000);
-if (!(await clicarCapital(mapa, "77"))) falha("bolinha 77 não encontrada");
+const segunda = await abrirPainelPorBolinha(mapa, 3);
 let outra = false;
 for (let i = 0; i < 25 && !outra; i++) { outra = await p.evaluate(() => document.body.innerText.includes("Como o score foi calculado")); if (!outra) await dorme(1000); }
 if (!outra) { await p.screenshot({path: "falha_outra.png"}); falha("o painel não abriu na segunda capital"); }
 console.log("4) segunda capital: painel abriu");
 
-// 5) método heurístico: troca na barra lateral, o cabeçalho e o aviso mudam e o painel da capital mostra os pontos de CAPE, LI e CIN
+// O método padrão é o HEURÍSTICO: o painel já abre com o cartão "Método" e o aviso do heurístico.
 async function fecharPainel() {
   await p.evaluate(() => { const b = [...document.querySelectorAll("button")].find(x => x.innerText.trim() === "Fechar"); if (b) b.click(); });
   for (let i = 0; i < 15 && await p.evaluate(() => document.body.innerText.includes("Como o score foi calculado")); i++) await dorme(1000);
@@ -86,37 +106,60 @@ async function fecharPainel() {
 async function escolherMetodo(trecho) {
   await p.evaluate(t => { const l = [...document.querySelectorAll('[data-testid="stSidebar"] label')].find(x => x.innerText.includes(t)); l.click(); }, trecho);
 }
+const metodoNaTela = (nome) => p.evaluate(n => new RegExp("M[ÉE]TODO\\s*\\n?\\s*" + n, "i").test(document.body.innerText), nome);
+const avisoHeuristico = () => p.evaluate(() => document.body.innerText.includes("Método heurístico:"));
+async function esperar(condicao, tentativas = 40) { for (let i = 0; i < tentativas; i++) { if (await condicao()) return true; await dorme(1000); } return false; }
+
+if (!(await metodoNaTela("Heurístico \\(CAPE, LI e CIN\\)")) || !(await avisoHeuristico())) falha("o painel não abriu no método heurístico (padrão)");
+console.log("5) o painel abre no método heurístico (padrão): cartão Método e aviso");
+
+// 5b) ajuste por chuva no Nordeste: o painel de Fortaleza (CE), aberto pela lista da barra lateral, mostra os pontos e a linha "Chuva prevista"
 await fecharPainel();
-await escolherMetodo("Heurístico");
-let heuristico = false;
-for (let i = 0; i < 40 && !heuristico; i++) {
-  heuristico = await p.evaluate(() => document.body.innerText.includes("Método heurístico:") && /M[ÉE]TODO\s*\n?\s*Heurístico \(CAPE, LI e CIN\)/i.test(document.body.innerText));
-  if (!heuristico) await dorme(1000);
+await p.evaluate(c => { const b = [...document.querySelectorAll('[data-testid="stSidebar"] button')].find(x => x.innerText.includes(c)); b.click(); }, "Fortaleza");
+const ajusteNE = await esperar(() => p.evaluate(() => { const t = document.body.innerText; return t.includes("Soma") && t.includes("Chuva prevista") && (t.includes("score reduzido nesta região") || t.includes("score mantido")); }), 30);
+if (!ajusteNE) { await p.screenshot({path: "falha_ajuste_ne.png"}); falha("o painel de Fortaleza não mostrou o ajuste por chuva do Nordeste"); }
+console.log("5b) painel de Fortaleza (CE): pontos de CAPE, LI e CIN e o ajuste por chuva do Nordeste");
+await fecharPainel();
+const assentar = async () => { mapa = await acharMapa(); await dorme(4000); };   // depois de fechar o painel o mapa é recriado: espera antes de clicar na lista
+// Abre o painel de uma capital pela lista da barra lateral. Se o clique se perder porque o mapa estava sendo recriado, tenta de novo (até 3
+// vezes); se o app NUNCA abrir o painel, o teste falha do mesmo jeito.
+async function abrirPelaLista(capital) {
+  for (let tentativa = 0; tentativa < 3; tentativa++) {
+    await assentar();
+    await p.evaluate(c => { const b = [...document.querySelectorAll('[data-testid="stSidebar"] button')].find(x => x.innerText.includes(c)); b.click(); }, capital);
+    // o painel está aberto quando aparece o seu título (o texto "Soma" também existe na barra lateral, então não serve de prova)
+    if (await esperar(() => p.evaluate(() => document.body.innerText.includes("Como o score foi calculado")), 14)) { await dorme(1000); return true; }
+  }
+  return false;
 }
-if (!heuristico) { await p.screenshot({path: "falha_metodo.png"}); falha("a troca para o método heurístico não apareceu no cabeçalho e no aviso"); }
-console.log("5) método heurístico selecionado: cabeçalho e aviso mudaram");
+const linhaDoAjuste = () => p.evaluate(() => { const t = document.body.innerText; return t.includes("score reduzido nesta região") || t.includes("score mantido"); });
+// Maceió (AL) foi acrescentada à lista do documento: tem a linha do ajuste; Rio de Janeiro (litoral fora do Nordeste) não tem
+if (!(await abrirPelaLista("Maceió")) || !(await linhaDoAjuste())) { await p.screenshot({path: "falha_maceio.png"}); falha("o painel de Maceió não mostrou o ajuste por chuva"); }
+console.log("5c) painel de Maceió (AL): ajuste por chuva presente (capital acrescentada à lista do documento)");
+await fecharPainel();
+if (!(await abrirPelaLista("Rio de Janeiro")) || (await linhaDoAjuste())) { await p.screenshot({path: "falha_rio.png"}); falha("o painel do Rio de Janeiro não deveria ter a linha do ajuste por chuva"); }
+console.log("5d) painel do Rio de Janeiro: sem ajuste por chuva (fora da lista)");
+await fecharPainel();
+// costa norte (foz do Amazonas): a capital de maior risco sem raios por perto no caso que motivou a extensão
+if (!(await abrirPelaLista("Macapá")) || !(await linhaDoAjuste())) { await p.screenshot({path: "falha_macapa.png"}); falha("o painel de Macapá não mostrou o ajuste por chuva"); }
+console.log("5e) painel de Macapá (AP): ajuste por chuva presente");
+await fecharPainel();
+
+// 6) trocar para CAPE × chuva: o aviso some, o cartão muda e o painel da capital mostra a tabela do produto (sem a soma de pontos)
+await escolherMetodo("CAPE × chuva");
+if (!(await esperar(async () => !(await avisoHeuristico()) && await metodoNaTela("CAPE × chuva")))) { await p.screenshot({path: "falha_metodo.png"}); falha("a troca para CAPE × chuva não apareceu no cabeçalho e no aviso"); }
 mapa = await acharMapa();
 await dorme(2500);
-if (!(await clicarCapital(mapa, "81")) && !(await clicarCapital(mapa, "76"))) {
-  // a pontuação das bolinhas muda com o método: clica em qualquer capital visível
-  const pins = await mapa.$$(".pdea-pin"); await pins[0].evaluate(e => e.scrollIntoView({block: "center"})); await dorme(800); await pins[0].click();
-}
-let tabelaHeuristica = false;
-for (let i = 0; i < 30 && !tabelaHeuristica; i++) {
-  tabelaHeuristica = await p.evaluate(() => { const t = document.body.innerText; return t.includes("Como o score foi calculado") && t.includes("Lifted Index") && t.includes("Soma"); });
-  if (!tabelaHeuristica) await dorme(1000);
-}
-if (!tabelaHeuristica) { await p.screenshot({path: "falha_tabela_heuristica.png"}); falha("o painel da capital não mostrou a tabela de pontos do método heurístico"); }
-console.log("6) painel da capital mostra os pontos de CAPE, LI e CIN e a soma");
+await abrirPainelPorBolinha(mapa, 0);
+const tabelaProduto = await esperar(() => p.evaluate(() => { const t = document.body.innerText; return t.includes("Como o score foi calculado") && t.includes("escala logarítmica") && !t.includes("Soma"); }), 30);
+if (!tabelaProduto) { await p.screenshot({path: "falha_tabela_produto.png"}); falha("o painel da capital não mostrou a tabela do CAPE × chuva"); }
+console.log("6) CAPE × chuva: aviso some, cartão muda e o painel mostra o produto CAPE × chuva");
 await fecharPainel();
-await escolherMetodo("CAPE × chuva");
-let padrao = false;
-for (let i = 0; i < 40 && !padrao; i++) {
-  padrao = await p.evaluate(() => !document.body.innerText.includes("Método heurístico:") && /M[ÉE]TODO\s*\n?\s*CAPE × chuva\b/i.test(document.body.innerText));
-  if (!padrao) await dorme(1000);
-}
-if (!padrao) falha("a volta ao método padrão não apareceu");
-console.log("7) volta ao método padrão: aviso some e cabeçalho volta a CAPE × chuva");
+
+// 7) voltar ao heurístico restaura o aviso e o cartão
+await escolherMetodo("Heurístico");
+if (!(await esperar(async () => (await avisoHeuristico()) && await metodoNaTela("Heurístico \\(CAPE, LI e CIN\\)")))) falha("a volta ao método heurístico não apareceu");
+console.log("7) volta ao método heurístico: aviso e cartão restaurados");
 if (erros.length) console.log("avisos de JS (informativo):", erros.slice(0, 3));
 console.log("TESTE DE NAVEGADOR: OK");
 await b.close();

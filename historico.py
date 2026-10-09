@@ -33,9 +33,9 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from analise import GatePrecipitacao, carregar_gate, extras_na_hora, janela_frente, multiplicador_do_gate, parametros_da_unidade
+from analise import GatePrecipitacao, carregar_gate, extras_na_hora, gate_efetivo, janela_frente, multiplicador_do_gate, parametros_da_unidade
 from modelos import MODELOS, TZ_BRASILIA, ErroBuscaModelo, buscar_modelo
-from risco_raio import PARAMETROS_PADRAO, ParametrosRisco, calcular_risco
+from risco_raio import METODO_PADRAO, PARAMETROS_PADRAO, ParametrosRisco, calcular_risco
 from unidades import ESTACOES
 
 CAMINHO_PADRAO = Path(__file__).resolve().parent / "historico" / "pdea.sqlite"
@@ -153,7 +153,7 @@ def _com_score(
     O gate usa a chuva prevista na mesma execução entre a hora e ``janela_h`` horas à frente,
     igual ao cálculo do painel; por isso a consulta precisa trazer essas horas seguintes.
     """
-    gate = carregar_gate() if gate is None else gate
+    gate = gate_efetivo(carregar_gate() if gate is None else gate, parametros)  # o ajuste só vale para o método heurístico
     uf_de = {e["nome"]: e["uf"] for e in ESTACOES}
     chaves = ["modelo", "execucao", "unidade"]
     ordenado = df.sort_values(chaves + ["valido"], kind="stable")
@@ -317,7 +317,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         for chave, valor in status().items():
             print(f"{chave}: {valor}")
     elif args.comando == "exportar":
-        print(f"{exportar_csv(args.saida, args.modelo, dias=args.dias)} linhas em {args.saida}")
+        print(f"{exportar_csv(args.saida, args.modelo, ParametrosRisco(metodo=METODO_PADRAO), dias=args.dias)} linhas em {args.saida}")
     elif args.comando == "limpar":
         print(f"{limpar(args.manter_dias)} linhas removidas.")
     return 0

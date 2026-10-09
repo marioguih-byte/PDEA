@@ -8,6 +8,7 @@ Exemplos:
     python alertas.py --dry-run
     python alertas.py --modelo ecmwf_ifs025 --nivel Alto --antecedencia 6
     python alertas.py --nivel Moderado
+    python alertas.py --metodo capexp          # método CAPE × chuva (o padrão é o heurístico, igual ao painel)
 
 Variáveis de ambiente (todas opcionais; sem elas, apenas imprime):
     ALERTA_WEBHOOK_URL                      URL do webhook (recebe JSON {"text": "...", "content": "..."})
@@ -30,7 +31,7 @@ import requests
 
 from analise import carregar_gate, carregar_regioes, consolidar, rotulo_horario, series_por_unidade
 from modelos import MODELOS, TZ_BRASILIA, buscar_modelo
-from risco_raio import ORDEM, ParametrosRisco
+from risco_raio import METODO_PADRAO, NOMES_METODO, ORDEM, ParametrosRisco
 
 ESTADO_PADRAO = Path("estado_alertas.json")
 
@@ -88,13 +89,16 @@ def _score_minimo(ordem_nivel: int) -> float:
     return 0.0 if ordem_nivel == 0 else float(NIVEIS_RISCO[ordem_nivel - 1][0])
 
 
-def montar_mensagem(alertas: list[dict[str, Any]], titulo: str, referencia: str) -> str:
+def montar_mensagem(alertas: list[dict[str, Any]], titulo: str, referencia: str, metodo: str = METODO_PADRAO) -> str:
     linhas = [f"⚡ {titulo} — referência {referencia}"]
     for a in sorted(alertas, key=lambda x: -(x["score"] or 0)):
         score = "—" if a["score"] is None else f"{a['score']:.0f}"
         pico = "" if a["pico"] is None else f" · pico {a['pico']:.0f} às {a['hora_pico']}"
         linhas.append(f"• {a['unidade']} ({a['uf']}): {a['nivel']} (score {score}) — {a['tipo']}{pico}")
-    linhas.append("Heurística de CAPE/LI/CIN; não substitui alertas oficiais.")
+    if metodo == "pontos":
+        linhas.append("Previsão de modelo (escore heurístico de CAPE/LI/CIN, com ajuste por chuva nas capitais do litoral do Norte e do Nordeste); não substitui alertas oficiais.")
+    else:
+        linhas.append("Previsão de modelo (escore CAPE × chuva); não substitui alertas oficiais.")
     return "\n".join(linhas)
 
 
@@ -120,16 +124,21 @@ def enviar_email(texto: str, assunto: str) -> None:
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--modelo", default="best_match", choices=list(MODELOS), help="modelo principal")
+    ap.add_argument("--metodo", default=METODO_PADRAO, choices=list(NOMES_METODO),
+                    help="método do score: pontos (heurístico, padrão, igual ao painel) ou capexp (CAPE × chuva)")
     ap.add_argument("--nivel", default="Alto", choices=["Moderado", "Alto", "Severo"], help="nível mínimo para alertar")
     ap.add_argument("--antecedencia", type=int, default=3, help="avisar também quando o nível for previsto em até N horas (0 = desliga)")
     ap.add_argument("--estado", type=Path, default=ESTADO_PADRAO, help="arquivo JSON com o estado anterior")
     ap.add_argument("--dry-run", action="store_true", help="não envia nada; só imprime e não grava o estado")
     args = ap.parse_args(argv)
 
-    dados = buscar_modelo(args.modelo)  # inclui a chuva prevista, necessária ao escore CAPE × chuva
+    dados = buscar_modelo(args.modelo)  # inclui a chuva prevista (usada no CAPE × chuva e no ajuste por chuva do heurístico)
     if not dados.get("_extras", False):
-        print("Aviso: sem dados de precipitação; o escore CAPE × chuva não pode ser calculado e nenhuma capital será avaliada.")
-    series = series_por_unidade(dados, ParametrosRisco(), carregar_regioes(), carregar_gate())
+        if args.metodo == "capexp":
+            print("Aviso: sem dados de precipitação; o escore CAPE × chuva não pode ser calculado e nenhuma capital será avaliada.")
+        else:
+            print("Aviso: sem dados de precipitação; o ajuste por chuva não é aplicado (o escore heurístico segue sem ele).")
+    series = series_por_unidade(dados, ParametrosRisco(metodo=args.metodo), carregar_regioes(), carregar_gate())
     tabela = consolidar(dados, series, 0)
 
     anterior = json.loads(args.estado.read_text(encoding="utf-8")) if args.estado.exists() else {}
@@ -143,7 +152,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             titulo = f"PDEA — {len(alertas)} capital(is) em {args.nivel} ou acima (agora ou em até {args.antecedencia} h)"
         else:
             titulo = f"PDEA — {len(alertas)} capital(is) em {args.nivel} ou acima"
-        texto = montar_mensagem(alertas, titulo, referencia)
+        texto = montar_mensagem(alertas, titulo, referencia, args.metodo)
         print(texto)
         if not args.dry_run:
             if os.environ.get("ALERTA_WEBHOOK_URL"):

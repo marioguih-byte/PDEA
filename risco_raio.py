@@ -163,6 +163,9 @@ FAIXAS_CIN: list[tuple[float, float]] = [(25.0, 20.0), (50.0, 10.0), (100.0, 0.0
 PONTOS_CIN_MAXIMO = -30.0  # |CIN| >= 200 J/kg
 
 NOMES_METODO = {"capexp": "CAPE × chuva", "pontos": "Heurístico (CAPE, LI e CIN)"}
+# Método usado por padrão no painel, nos alertas e nas exportações. (O valor padrão do dataclass ParametrosRisco continua "capexp":
+# ele é a base do método CAPE x chuva e dos testes; quem decide o método do produto é esta constante.)
+METODO_PADRAO = "pontos"
 
 
 def _pontos_cape(cape: float) -> float:

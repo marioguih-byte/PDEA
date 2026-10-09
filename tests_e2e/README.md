@@ -5,7 +5,7 @@ Abre o painel em um Chromium de verdade (sem tela), com previsão e raios **simu
 - clicar na bolinha de uma capital **abre o painel de detalhes**;
 - o painel **não fecha sozinho** durante as atualizações do canal dos raios (65 s, duas rodadas);
 - o botão *Fechar* fecha, e outra capital abre;
-- trocar para o **método heurístico** muda o cartão *Método* do cabeçalho e mostra o aviso, o painel da capital passa a mostrar a tabela de pontos (CAPE, LI e CIN, com a soma), e voltar ao método padrão restaura tudo.
+- o painel abre no **método heurístico** (padrão); o painel de **Fortaleza (CE)** mostra os pontos de CAPE, LI e CIN e a linha do **ajuste por chuva do Nordeste**; os de **Maceió (AL)** e **Macapá (AP)**, acrescentadas à lista do documento, também têm a linha, e o do **Rio de Janeiro** (fora da lista) não; trocar para **CAPE × chuva** muda o cartão *Método*, tira o aviso e mostra a tabela do produto; voltar ao heurístico restaura tudo.
 
 ```bash
 cd tests_e2e && npm install @sparticuz/chromium puppeteer-core leaflet@1.9.4 jquery && cd ..

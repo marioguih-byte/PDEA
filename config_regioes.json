@@ -1,133 +1,145 @@
 {
- "AC": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "AL": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "AM": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "AP": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "BA": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "CE": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "DF": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "ES": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "GO": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "MA": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "MG": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "MS": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "MT": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "PA": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "PB": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "PE": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "PI": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "PR": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "RJ": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "RN": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "RO": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "RR": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "RS": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "SC": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "SE": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "SP": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "TO": {
-  "fator_cape": 1.0,
-  "fator_li": 1.0
- },
- "gate_precipitacao": {
-  "ufs": [],
-  "limiar_mm_h": 1.0,
-  "janela_h": 3,
-  "multiplicador": 0.5
- },
- "correcao_costeira": {
-  "fator": 0.4,
-  "ufs": [
-   "AL",
-   "BA",
-   "CE",
-   "ES",
-   "MA",
-   "PB",
-   "PE",
-   "RJ",
-   "RN",
-   "SC",
-   "SE"
-  ],
-  "nota": "Capitais litorâneas (Maceió, Salvador, Fortaleza, Vitória, São Luís, João Pessoa, Recife, Rio de Janeiro, Natal, Florianópolis, Aracaju). Fator PROVISÓRIO sobre o produto CAPE x chuva; ver README. Esvazie 'ufs' ou use fator 1,0 para desligar."
- }
+  "AC": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "AL": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "AM": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "AP": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "BA": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "CE": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "DF": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "ES": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "GO": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "MA": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "MG": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "MS": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "MT": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "PA": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "PB": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "PE": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "PI": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "PR": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "RJ": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "RN": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "RO": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "RR": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "RS": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "SC": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "SE": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "SP": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "TO": {
+    "fator_cape": 1.0,
+    "fator_li": 1.0
+  },
+  "gate_precipitacao": {
+    "ufs": [
+      "AL",
+      "AP",
+      "BA",
+      "CE",
+      "MA",
+      "PA",
+      "PB",
+      "PE",
+      "RN",
+      "SE"
+    ],
+    "limiar_mm_h": 1.0,
+    "janela_h": 3,
+    "multiplicador": 0.5,
+    "nota": "Ajuste por chuva prevista nas capitais do litoral do Norte e do Nordeste. Origem: documentação técnica do RUSBÉ, seção 5.4, que aplica a regra a BA, CE, PE, RN e SE. Estendida a Maceió (AL), João Pessoa (PB) e São Luís (MA), também litorâneas e do Nordeste, e a Macapá (AP) e Belém (PA), na foz do Amazonas: Macapá apareceu como a capital de maior risco (54) sem raios do GLM por perto. Teresina (PI, interior) e as demais regiões costeiras (por exemplo RJ e SP, que o documento aponta como pendentes) ficam de fora. Vale SÓ para o método heurístico: nas UFs listadas, o score é multiplicado por 'multiplicador' quando a chuva máxima prevista entre a hora e +'janela_h' h é menor que 'limiar_mm_h'. Sem dado de precipitação o ajuste não é aplicado. Valores provisórios, sem validação com observações. Esvazie 'ufs' para desligar; acrescente UFs para estender."
+  },
+  "correcao_costeira": {
+    "fator": 0.4,
+    "ufs": [
+      "AL",
+      "BA",
+      "CE",
+      "ES",
+      "MA",
+      "PB",
+      "PE",
+      "RJ",
+      "RN",
+      "SC",
+      "SE"
+    ],
+    "nota": "Capitais litorâneas (Maceió, Salvador, Fortaleza, Vitória, São Luís, João Pessoa, Recife, Rio de Janeiro, Natal, Florianópolis, Aracaju). Fator PROVISÓRIO sobre o produto CAPE x chuva; ver README. Esvazie 'ufs' ou use fator 1,0 para desligar."
+  }
 }

@@ -148,6 +148,21 @@ def carregar_gate(caminho: Path = ARQUIVO_REGIOES) -> GatePrecipitacao:
         return GatePrecipitacao()
 
 
+GATE_DESLIGADO = GatePrecipitacao()  # nenhuma UF: não age
+
+
+def gate_efetivo(gate: Optional[GatePrecipitacao], parametros: ParametrosRisco) -> Optional[GatePrecipitacao]:
+    """O ajuste por chuva prevista é um complemento do método HEURÍSTICO, que não usa a chuva.
+
+    No método CAPE × chuva a chuva já faz parte do produto e as capitais litorâneas têm a própria correção: aplicar o ajuste também
+    corrigiria duas vezes. Por isso, em qualquer outro método, o ajuste é ignorado (aqui, em um só lugar, para o painel, o histórico
+    e os alertas ficarem sempre de acordo).
+    """
+    if gate is None or parametros.metodo == "pontos":
+        return gate
+    return GATE_DESLIGADO
+
+
 def janela_frente(valores: list[Optional[float]], janela: int) -> list[Optional[float]]:
     """Máximo de cada posição e das ``janela`` seguintes (ignora ``None``; ``None`` se não houver nenhum valor)."""
     saida: list[Optional[float]] = []
@@ -171,6 +186,7 @@ def scores_relativos(
     gate: Optional[GatePrecipitacao] = None,
 ) -> list[Optional[float]]:
     """Scores horários a partir da hora atual: posição 0 = agora, 1 = +1 h, …"""
+    gate = gate_efetivo(gate, parametros)
     inicio = serie.get("idx_atual", 0)
     n = len(serie.get("tempos", []))
     capes, lis, cins = serie.get("cape", []), serie.get("li", []), serie.get("cin", [])
@@ -208,6 +224,7 @@ def explicar_hora(
     gate: Optional[GatePrecipitacao] = None,
 ) -> dict[str, Any]:
     """Como o score de uma hora foi formado (pontos por componente, ajuste regional e gate)."""
+    gate = gate_efetivo(gate, parametros)
     i = serie.get("idx_atual", 0) + deslocamento
     p = parametros_da_unidade(parametros, uf, regioes)
     chuva = None
@@ -263,6 +280,7 @@ def series_por_unidade(
     gate: Optional[GatePrecipitacao] = None,
 ) -> dict[str, dict[str, Any]]:
     """Série de score por unidade (``rel``: posição 0 = agora, 1 = +1 h, …), com ajuste por UF e gate de chuva."""
+    gate = gate_efetivo(gate, parametros)
     return {
         estacao["nome"]: {
             "rel": scores_relativos(
